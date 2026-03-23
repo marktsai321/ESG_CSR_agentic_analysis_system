@@ -10,7 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).resolve().parent
+# Use the same ROOT logic as report_utils so all modules agree on paths.
+from esg_csr_agent.report_utils import ROOT
+
 DATA_DIR = ROOT / "data"
 RAW_PDF_DIR = DATA_DIR / "raw_pdfs"
 EXTRACTED_TEXT_DIR = DATA_DIR / "extracted_text"

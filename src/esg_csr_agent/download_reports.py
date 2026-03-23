@@ -3,19 +3,14 @@ from __future__ import annotations
 """
 Unified entry point for the agentic ESG/CSR report download pipeline.
 
-  python download_reports.py --type esg               # ESG only (TWSE ESG+)
-  python download_reports.py --type csr               # CSR only (MOPS)
-  python download_reports.py --type both              # both (default)
-  python download_reports.py --type both --year 2021
-  python download_reports.py --companies 2330 2317    # filter by company code
-  python download_reports.py --type csr --year 2019 -j 4
+  python -m esg_csr_agent.download_reports --type both --year 2023 --companies 2330 2317
 """
 
 import argparse
 import time
 from pathlib import Path
 
-from report_utils import ROOT
+from esg_csr_agent.report_utils import ROOT
 
 
 def run(
@@ -37,7 +32,7 @@ def run(
     results: dict = {}
 
     if report_type in ("esg", "both"):
-        import download_esg_pdfs as esg_mod
+        from esg_csr_agent import download_esg_pdfs as esg_mod
         esg_year = year if year is not None else 2024
         print(f"\n{'='*60}")
         print(f"ESG 報告書下載  年度={esg_year}  公司代號={company_codes or '全部'}")
@@ -50,7 +45,7 @@ def run(
         _write_failed_csv(failed, "esg", esg_year)
 
     if report_type in ("csr", "both"):
-        import download_csr_pdfs as csr_mod
+        from esg_csr_agent import download_csr_pdfs as csr_mod
         csr_year = year if year is not None else 2020
         print(f"\n{'='*60}")
         print(f"CSR 報告書下載  年度={csr_year}  公司代號={company_codes or '全部'}")
@@ -71,7 +66,6 @@ def _run_downloads(
     jobs: int,
     fallback_url: bool,
 ) -> tuple[list[str], list[str]]:
-    """Run downloads and return (downloaded_paths, failed_company_ids)."""
     downloaded: list[str] = []
     failed:     list[str] = []
 
@@ -97,10 +91,10 @@ def _run_downloads(
 
 
 def _write_failed_csv(failed_ids: list[str], report_type: str, year: int) -> None:
-    """Write failed company IDs to a structured CSV for the Fail Handler Agent."""
     if not failed_ids:
         return
-    path = ROOT / f"failed_{report_type}_{year}.csv"
+    path = ROOT / "logs" / f"failed_{report_type}_{year}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
     import csv
     with path.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
@@ -114,27 +108,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="統一入口：下載 ESG（TWSE ESG+）或 CSR（MOPS）報告書 PDF",
     )
-    parser.add_argument(
-        "--type", dest="report_type", default="both",
-        choices=["esg", "csr", "both"],
-        help="下載類型：esg / csr / both（預設 both）",
-    )
-    parser.add_argument(
-        "--year", type=int, default=None,
-        help="西元年度（ESG 預設 2024，CSR 預設 2020）",
-    )
-    parser.add_argument(
-        "--companies", nargs="+", metavar="CODE",
-        help="只下載指定公司代號（空白分隔，e.g. --companies 2330 2317）",
-    )
-    parser.add_argument(
-        "--fallback-url", action="store_true",
-        help="平台無檔時改抓公司網址（預設不啟用）",
-    )
-    parser.add_argument(
-        "-j", "--jobs", type=int, default=8, metavar="N",
-        help="並行下載數（預設 8；設 1 則依序）",
-    )
+    parser.add_argument("--type", dest="report_type", default="both",
+                        choices=["esg", "csr", "both"], help="下載類型（預設 both）")
+    parser.add_argument("--year", type=int, default=None, help="西元年度")
+    parser.add_argument("--companies", nargs="+", metavar="CODE", help="公司代號")
+    parser.add_argument("--fallback-url", action="store_true", help="平台無檔時改抓公司網址")
+    parser.add_argument("-j", "--jobs", type=int, default=8, metavar="N", help="並行下載數（預設 8）")
     args = parser.parse_args()
 
     summary = run(

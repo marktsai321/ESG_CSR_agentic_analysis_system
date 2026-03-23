@@ -3,8 +3,7 @@ from __future__ import annotations
 """
 ESG Analysis Agent
 ==================
-Analyzes ESG (永續報告書) content using RAG retrieval from the vector store.
-Produces structured JSON output with confidence scores per dimension.
+Analyzes ESG content using RAG retrieval from the vector store.
 """
 
 import json
@@ -12,7 +11,7 @@ from pathlib import Path
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, ANALYSIS_DIR
+from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR
 
 
 def create_esg_analysis_agent() -> Agent:
@@ -33,7 +32,6 @@ def create_esg_analysis_agent() -> Agent:
     )
 
 
-# RAG query templates for each ESG dimension
 ESG_QUERIES = {
     "environmental": [
         "碳排放量 溫室氣體 排放",
@@ -58,9 +56,8 @@ ESG_QUERIES = {
 
 
 def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> list[str]:
-    """Retrieve relevant chunks from vector store for given queries."""
-    from vector_store import get_vector_store
-    from agents.chunk_embed_agent import generate_embeddings
+    from esg_csr_agent.vector_store import get_vector_store
+    from esg_csr_agent.agents.chunk_embed_agent import generate_embeddings
 
     vs = get_vector_store()
     all_texts: list[str] = []
@@ -79,14 +76,8 @@ def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> lis
 
 
 def analyze_esg(company_id: str, year: int, namespace: str) -> dict:
-    """
-    Run ESG analysis for a single company/year.
-
-    Returns structured analysis dict with confidence scores.
-    """
     output_path = ANALYSIS_DIR / f"{company_id}_{year}_esg.json"
 
-    # Idempotency
     if output_path.exists():
         print(f"[EXIST] ESG 分析結果已存在: {output_path.name}")
         return json.loads(output_path.read_text(encoding="utf-8"))
@@ -100,7 +91,6 @@ def analyze_esg(company_id: str, year: int, namespace: str) -> dict:
 
     for dimension, queries in ESG_QUERIES.items():
         context_chunks = _retrieve_context(namespace, queries)
-
         analysis["dimensions"][dimension] = {
             "retrieved_chunks": len(context_chunks),
             "context_summary": "\n".join(context_chunks[:10]),
@@ -109,19 +99,12 @@ def analyze_esg(company_id: str, year: int, namespace: str) -> dict:
             "confidence": 0.0,
         }
 
-    # Save analysis result
     output_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[OK] ESG 分析完成: {output_path.name}")
-
     return analysis
 
 
-def create_esg_analysis_task(
-    agent: Agent,
-    company_id: str,
-    year: int,
-    namespace: str,
-) -> Task:
+def create_esg_analysis_task(agent: Agent, company_id: str, year: int, namespace: str) -> Task:
     return Task(
         description=(
             f"請對公司 {company_id} 的 {year} 年度 ESG 永續報告書進行結構化分析。\n"
@@ -130,9 +113,8 @@ def create_esg_analysis_task(
             "1. 環境（Environmental）：碳排放、能源使用、水資源、廢棄物、氣候目標\n"
             "2. 社會（Social）：員工福利、供應鏈、社區投入、人權\n"
             "3. 治理（Governance）：董事會組成、反貪腐、透明度、風險管理\n\n"
-            "請使用 RAG 從向量資料庫檢索相關段落進行分析。\n"
-            "每個面向須包含：分析結論、量化指標（如有）、信心分數（0.0-1.0）。\n"
-            "結果以 JSON 格式儲存至 data/analysis/{company_id}_{year}_esg.json"
+            "每個面向須包含：分析結論、量化指標、信心分數（0.0-1.0）。\n"
+            f"結果儲存至 data/analysis/{company_id}_{year}_esg.json"
         ),
         expected_output="結構化 ESG 分析結果（JSON 格式，含各面向分析及信心分數）",
         agent=agent,

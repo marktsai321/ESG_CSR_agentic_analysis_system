@@ -3,16 +3,14 @@ from __future__ import annotations
 """
 Cross Analysis Agent
 ====================
-Compares ESG and CSR findings for the same company to identify
-consistency, contradictions, and gaps.
+Compares ESG and CSR findings for the same company.
 """
 
 import json
-from pathlib import Path
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, ANALYSIS_DIR
+from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR
 
 
 def create_cross_analysis_agent() -> Agent:
@@ -33,14 +31,8 @@ def create_cross_analysis_agent() -> Agent:
 
 
 def cross_analyze(company_id: str, year: int) -> dict:
-    """
-    Compare ESG and CSR analysis results for a single company/year.
-
-    Returns cross-analysis result dict.
-    """
     output_path = ANALYSIS_DIR / f"{company_id}_{year}_cross.json"
 
-    # Idempotency
     if output_path.exists():
         print(f"[EXIST] 交叉分析結果已存在: {output_path.name}")
         return json.loads(output_path.read_text(encoding="utf-8"))
@@ -48,13 +40,8 @@ def cross_analyze(company_id: str, year: int) -> dict:
     esg_path = ANALYSIS_DIR / f"{company_id}_{year}_esg.json"
     csr_path = ANALYSIS_DIR / f"{company_id}_{year}_csr.json"
 
-    esg_data = None
-    csr_data = None
-
-    if esg_path.exists():
-        esg_data = json.loads(esg_path.read_text(encoding="utf-8"))
-    if csr_path.exists():
-        csr_data = json.loads(csr_path.read_text(encoding="utf-8"))
+    esg_data = json.loads(esg_path.read_text(encoding="utf-8")) if esg_path.exists() else None
+    csr_data = json.loads(csr_path.read_text(encoding="utf-8")) if csr_path.exists() else None
 
     cross_result: dict = {
         "company_id": company_id,
@@ -69,10 +56,8 @@ def cross_analyze(company_id: str, year: int) -> dict:
     }
 
     if esg_data and csr_data:
-        # Compare environmental dimensions
         esg_env = esg_data.get("dimensions", {}).get("environmental", {})
         csr_env = csr_data.get("dimensions", {}).get("environmental_stewardship", {})
-
         if esg_env and csr_env:
             cross_result["alignments"].append({
                 "dimension": "環境",
@@ -81,10 +66,8 @@ def cross_analyze(company_id: str, year: int) -> dict:
                 "csr_chunks": csr_env.get("retrieved_chunks", 0),
             })
 
-        # Compare employee/social dimensions
         esg_social = esg_data.get("dimensions", {}).get("social", {})
         csr_employee = csr_data.get("dimensions", {}).get("employee_relations", {})
-
         if esg_social and csr_employee:
             cross_result["alignments"].append({
                 "dimension": "社會/員工",
@@ -93,30 +76,25 @@ def cross_analyze(company_id: str, year: int) -> dict:
                 "csr_chunks": csr_employee.get("retrieved_chunks", 0),
             })
 
-        # Identify gaps
         if not csr_data.get("dimensions", {}).get("stakeholder_engagement", {}).get("retrieved_chunks"):
             cross_result["gaps"].append({
                 "dimension": "利害關係人溝通",
                 "source": "csr",
                 "note": "CSR 報告中未找到相關內容",
             })
-
     elif not esg_data:
         cross_result["gaps"].append({
-            "dimension": "全部",
-            "source": "esg",
+            "dimension": "全部", "source": "esg",
             "note": f"ESG 分析結果不存在: {company_id}_{year}_esg.json",
         })
     elif not csr_data:
         cross_result["gaps"].append({
-            "dimension": "全部",
-            "source": "csr",
+            "dimension": "全部", "source": "csr",
             "note": f"CSR 分析結果不存在: {company_id}_{year}_csr.json",
         })
 
     output_path.write_text(json.dumps(cross_result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[OK] 交叉分析完成: {output_path.name}")
-
     return cross_result
 
 
@@ -125,13 +103,9 @@ def create_cross_analysis_task(agent: Agent, company_id: str, year: int) -> Task
         description=(
             f"請對公司 {company_id} 的 {year} 年度進行 ESG 與 CSR 交叉分析。\n\n"
             "比對項目：\n"
-            "1. 事實矛盾（如不同年度的排放數據不一致）\n"
-            "2. 重大議題的對齊程度\n"
-            "3. 僅出現在一份報告中的聲明\n"
-            "4. 多年度數據的趨勢一致性\n\n"
-            "高嚴重度的矛盾須標記為 flag，供驗證閘門審查。\n"
+            "1. 事實矛盾\n2. 重大議題對齊程度\n3. 僅出現在一份報告中的聲明\n4. 趨勢一致性\n\n"
             f"結果儲存至 data/analysis/{company_id}_{year}_cross.json"
         ),
-        expected_output="交叉分析結果（JSON 格式，含矛盾、對齊、缺口清單）",
+        expected_output="交叉分析結果（JSON 格式）",
         agent=agent,
     )

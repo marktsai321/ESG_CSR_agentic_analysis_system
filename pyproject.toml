@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "esg-csr-agent"
+version = "0.1.0"
+description = "Agentic ESG/CSR report analysis system for Taiwan-listed companies"
+readme = "CLAUDE.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    # Core framework
+    "crewai>=0.80.0",
+    "crewai-tools>=0.14.0",
+    # LLM
+    "openai>=1.0.0",
+    "langchain-openai>=0.1.0",
+    # PDF & text extraction
+    "pdfplumber>=0.10.0",
+    "PyPDF2>=3.0.0",
+    # Embeddings & vector store
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0.0",
+    # Web scraping
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    # PDF generation
+    "markdown>=3.5.0",
+    "weasyprint>=62.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+esg-csr-agent = "esg_csr_agent.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

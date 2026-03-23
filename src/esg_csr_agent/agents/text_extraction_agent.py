@@ -10,7 +10,7 @@ from pathlib import Path
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, EXTRACTED_TEXT_DIR
+from esg_csr_agent.config import OPENAI_MODEL_NAME, EXTRACTED_TEXT_DIR
 
 
 def create_text_extraction_agent() -> Agent:
@@ -77,15 +77,7 @@ def extract_text_from_pdf(pdf_path: str, output_key: str) -> str | None:
 
 
 def extract_all(pdf_paths: dict[str, str]) -> dict[str, str | None]:
-    """
-    Extract text from multiple PDFs.
-
-    Args:
-        pdf_paths: {key: pdf_path} mapping, e.g. {"2330_2023_esg": "/path/to.pdf"}
-
-    Returns:
-        {key: extracted_text_path_or_None}
-    """
+    """Extract text from multiple PDFs."""
     results: dict[str, str | None] = {}
     for key, pdf_path in pdf_paths.items():
         results[key] = extract_text_from_pdf(pdf_path, key)

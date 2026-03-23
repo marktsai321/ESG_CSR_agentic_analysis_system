@@ -3,8 +3,7 @@ from __future__ import annotations
 """
 Report Revision Agent
 =====================
-Transforms structured JSON analysis outputs into coherent, polished
-Chinese prose ready for PDF generation.
+Transforms structured JSON analysis into polished Chinese Markdown.
 """
 
 import json
@@ -12,8 +11,8 @@ from pathlib import Path
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, ANALYSIS_DIR, REVISED_DIR
-from pipeline_state import PipelineState
+from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR, REVISED_DIR
+from esg_csr_agent.pipeline_state import PipelineState
 
 
 def create_report_revision_agent() -> Agent:
@@ -40,7 +39,6 @@ def _load_analysis(company_id: str, year: int, rtype: str) -> dict | None:
 
 
 def _format_dimension(name: str, data: dict) -> str:
-    """Format a single dimension section."""
     lines = [f"#### {name}\n"]
     findings = data.get("findings", "")
     if findings:
@@ -79,21 +77,14 @@ CSR_DIM_NAMES = {
 
 
 def revise_report(state: PipelineState) -> str | None:
-    """
-    Generate a revised Markdown report from all analysis JSONs.
-
-    Returns the path to the Markdown file, or None on failure.
-    """
     output_path = REVISED_DIR / f"{state.run_id}.md"
 
-    # Idempotency
     if output_path.exists():
         print(f"[EXIST] 修訂報告已存在: {output_path.name}")
         return str(output_path)
 
     sections: list[str] = []
 
-    # Title & metadata
     company_names = ", ".join(state.companies)
     year_range = ", ".join(str(y) for y in state.years)
     sections.append(f"# ESG/CSR 分析報告\n")
@@ -102,7 +93,6 @@ def revise_report(state: PipelineState) -> str | None:
     sections.append(f"**報告類型：** {', '.join(state.report_types)}  ")
     sections.append(f"**報告編號：** {state.run_id}\n")
 
-    # Executive summary
     sections.append("## 摘要\n")
     sections.append(
         f"本報告針對 {company_names} 公司的 {year_range} 年度"
@@ -110,12 +100,10 @@ def revise_report(state: PipelineState) -> str | None:
         "涵蓋環境、社會、治理等面向，並進行交叉比對分析。\n"
     )
 
-    # Per-company sections
     for company in state.companies:
         for year in state.years:
             sections.append(f"---\n\n## {company} — {year} 年度\n")
 
-            # ESG section
             if "esg" in state.report_types:
                 esg = _load_analysis(company, year, "esg")
                 if esg:
@@ -124,7 +112,6 @@ def revise_report(state: PipelineState) -> str | None:
                         dim_name = ESG_DIM_NAMES.get(dim_key, dim_key)
                         sections.append(_format_dimension(dim_name, dim_data))
 
-            # CSR section
             if "csr" in state.report_types:
                 csr = _load_analysis(company, year, "csr")
                 if csr:
@@ -133,51 +120,29 @@ def revise_report(state: PipelineState) -> str | None:
                         dim_name = CSR_DIM_NAMES.get(dim_key, dim_key)
                         sections.append(_format_dimension(dim_name, dim_data))
 
-            # Cross-analysis section
             if len(state.report_types) >= 2:
                 cross = _load_analysis(company, year, "cross")
                 if cross:
                     sections.append("### 交叉分析結果\n")
-
-                    contradictions = cross.get("contradictions", [])
-                    if contradictions:
-                        sections.append("**矛盾：**\n")
-                        for c in contradictions:
-                            sections.append(f"- ⚠️ {c.get('note', '')}\n")
-
-                    alignments = cross.get("alignments", [])
-                    if alignments:
-                        sections.append("**一致性：**\n")
-                        for a in alignments:
-                            sections.append(f"- {a.get('dimension', '')}: {a.get('note', '')}\n")
-
-                    gaps = cross.get("gaps", [])
-                    if gaps:
-                        sections.append("**缺口：**\n")
-                        for g in gaps:
-                            sections.append(f"- {g.get('dimension', '')}: {g.get('note', '')}\n")
+                    for c in cross.get("contradictions", []):
+                        sections.append(f"- **矛盾：** {c.get('note', '')}\n")
+                    for a in cross.get("alignments", []):
+                        sections.append(f"- **一致性：** {a.get('dimension', '')}: {a.get('note', '')}\n")
+                    for g in cross.get("gaps", []):
+                        sections.append(f"- **缺口：** {g.get('dimension', '')}: {g.get('note', '')}\n")
 
     markdown = "\n".join(sections)
     output_path.write_text(markdown, encoding="utf-8")
     print(f"[OK] 修訂報告已產生: {output_path.name}")
-
     return str(output_path)
 
 
 def create_revision_task(agent: Agent, state: PipelineState) -> Task:
     return Task(
         description=(
-            "請將所有分析結果整合為一份連貫的中文報告文稿。\n\n"
+            "請將所有分析結果整合為一份連貫的中文報告文稿。\n"
             f"公司：{', '.join(state.companies)}\n"
             f"年度：{', '.join(str(y) for y in state.years)}\n"
-            f"報告類型：{', '.join(state.report_types)}\n\n"
-            "報告結構：\n"
-            "1. 摘要（Executive Summary）\n"
-            "2. 各公司 ESG 分析（如適用）\n"
-            "3. 各公司 CSR 分析（如適用）\n"
-            "4. 交叉分析發現與矛盾標記\n"
-            "5. 量化指標數據表格\n\n"
-            "所有內容以中文撰寫。使用 Markdown 格式。\n"
             f"輸出至 data/revised/{state.run_id}.md"
         ),
         expected_output="完整的中文 Markdown 報告文稿",

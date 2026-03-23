@@ -3,8 +3,7 @@ from __future__ import annotations
 """
 CSR Analysis Agent
 ==================
-Analyzes CSR (企業社會責任報告書) content using RAG retrieval.
-Aligned with GRI Standards and Taiwan's CSR reporting guidelines.
+Analyzes CSR content using RAG retrieval.
 """
 
 import json
@@ -12,7 +11,7 @@ from pathlib import Path
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, ANALYSIS_DIR
+from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR
 
 
 def create_csr_analysis_agent() -> Agent:
@@ -58,9 +57,8 @@ CSR_QUERIES = {
 
 
 def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> list[str]:
-    """Retrieve relevant chunks from vector store for given queries."""
-    from vector_store import get_vector_store
-    from agents.chunk_embed_agent import generate_embeddings
+    from esg_csr_agent.vector_store import get_vector_store
+    from esg_csr_agent.agents.chunk_embed_agent import generate_embeddings
 
     vs = get_vector_store()
     all_texts: list[str] = []
@@ -79,19 +77,12 @@ def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> lis
 
 
 def analyze_csr(company_id: str, year: int, namespace: str) -> dict:
-    """
-    Run CSR analysis for a single company/year.
-
-    Returns structured analysis dict with confidence scores.
-    """
     output_path = ANALYSIS_DIR / f"{company_id}_{year}_csr.json"
 
-    # Idempotency
     if output_path.exists():
         print(f"[EXIST] CSR 分析結果已存在: {output_path.name}")
         return json.loads(output_path.read_text(encoding="utf-8"))
 
-    # CSR year range warning
     if year >= 2022:
         print(f"[WARN] CSR 報告書自 2022 年起可能不存在（已改為 ESG 永續報告書）")
 
@@ -104,7 +95,6 @@ def analyze_csr(company_id: str, year: int, namespace: str) -> dict:
 
     for dimension, queries in CSR_QUERIES.items():
         context_chunks = _retrieve_context(namespace, queries)
-
         analysis["dimensions"][dimension] = {
             "retrieved_chunks": len(context_chunks),
             "context_summary": "\n".join(context_chunks[:10]),
@@ -115,29 +105,18 @@ def analyze_csr(company_id: str, year: int, namespace: str) -> dict:
 
     output_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[OK] CSR 分析完成: {output_path.name}")
-
     return analysis
 
 
-def create_csr_analysis_task(
-    agent: Agent,
-    company_id: str,
-    year: int,
-    namespace: str,
-) -> Task:
+def create_csr_analysis_task(agent: Agent, company_id: str, year: int, namespace: str) -> Task:
     return Task(
         description=(
             f"請對公司 {company_id} 的 {year} 年度 CSR 企業社會責任報告書進行結構化分析。\n"
             f"向量命名空間：{namespace}\n\n"
             "分析面向（依循 GRI Standards 及台灣 CSR 報告指引）：\n"
-            "1. 利害關係人溝通（Stakeholder Engagement）\n"
-            "2. 重大議題鑑別（Material Topics）\n"
-            "3. 社區投入（Community Investment）\n"
-            "4. 員工關係（Employee Relations）\n"
-            "5. 環境管理（Environmental Stewardship）\n\n"
-            "請使用 RAG 從向量資料庫檢索相關段落進行分析。\n"
-            "每個面向須包含：分析結論、量化指標（如有）、信心分數（0.0-1.0）。\n"
-            f"結果以 JSON 格式儲存至 data/analysis/{company_id}_{year}_csr.json"
+            "1. 利害關係人溝通\n2. 重大議題鑑別\n3. 社區投入\n4. 員工關係\n5. 環境管理\n\n"
+            "每個面向須包含：分析結論、量化指標、信心分數（0.0-1.0）。\n"
+            f"結果儲存至 data/analysis/{company_id}_{year}_csr.json"
         ),
         expected_output="結構化 CSR 分析結果（JSON 格式，含各面向分析及信心分數）",
         agent=agent,

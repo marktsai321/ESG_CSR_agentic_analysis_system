@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 """
-那一頁就有全部公司的「下載 PDF」按鈕，這支程式就是：從那頁取得全部 → 一個一個按下載。
+ESG report downloader — TWSE ESG+ platform.
 
-做法：用該頁背後的查詢 API 拿到整頁清單（畫面上每一筆對應一個下載按鈕），
-再對每一筆呼叫同一個「下載 PDF」API（等同按那顆按鈕），把檔案存到 data/raw_pdfs/esg/。
-
-  python download_esg_pdfs.py              # 從那頁取全部、一直下載 PDF（預設）
-  python download_esg_pdfs.py --csv         # 改用既有 CSV 清單
-  python download_esg_pdfs.py --year 2023   # 指定年度（預設 2024）
+  python -m esg_csr_agent.download_esg_pdfs              # default
+  python -m esg_csr_agent.download_esg_pdfs --csv         # use existing CSV
+  python -m esg_csr_agent.download_esg_pdfs --year 2023   # specify year
 """
 
 import argparse
@@ -18,7 +15,7 @@ from pathlib import Path
 
 import requests
 
-from report_utils import ROOT, get_data_dir, iter_rows, safe_filename
+from esg_csr_agent.report_utils import ROOT, get_data_dir, iter_rows, safe_filename
 
 DATA_DIR = get_data_dir("esg")
 
@@ -44,10 +41,6 @@ FILE_STREAM_HEADERS = {
 
 
 def _try_twse_download(download_id: str, timeout: int = 60) -> tuple[bytes, str] | tuple[None, str]:
-    """
-    用公開資訊網「下載 PDF」API（FileStream?id=）直接取檔案。
-    成功回傳 (content, content_type)，失敗回傳 (None, 失敗原因字串)。
-    """
     if not download_id or download_id == "00000000-0000-0000-0000-000000000000":
         return (None, "無下載 ID")
     try:
@@ -86,7 +79,6 @@ def download_one(row: dict, timeout: int = 60, platform_only: bool = True) -> Pa
     content = None
     ctype = ""
 
-    # 方式一：公開資訊網直接下載（等同網頁「下載 PDF」）
     if twse_id:
         print(f"[平台] {row.get('company_name')} {row.get('year')} {row.get('lang')} id={twse_id[:8]}...")
         out, msg = _try_twse_download(twse_id, timeout=timeout)
@@ -96,7 +88,6 @@ def download_one(row: dict, timeout: int = 60, platform_only: bool = True) -> Pa
         else:
             print(f"      -> 失敗: {msg}")
 
-    # 選用：失敗時改抓公司網址（預設不啟用，只解析這頁、只從這頁下載 PDF）
     if content is None and url and platform_only is False:
         print(f"[網址] {row.get('company_name')} {row.get('year')} {row.get('lang')} <- {url[:50]}...")
         try:
@@ -132,7 +123,6 @@ def download_one_with_retry(row: dict, retries: int = 2, **kwargs) -> Path | Non
 
 
 def _fetch_rows_from_page(year: int = 2024) -> list[dict]:
-    """從該頁查詢 API 取得整頁清單（每一筆對應一顆下載 PDF 按鈕）。"""
     payload = {
         "marketType": 0,
         "year": year,
@@ -168,17 +158,17 @@ def _fetch_rows_from_page(year: int = 2024) -> list[dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="在那一頁找所有下載 PDF，然後一直下載")
-    parser.add_argument("--csv", action="store_true", help="改用既有 CSV 清單，不從該頁取（預設是從該頁取）")
-    parser.add_argument("--year", type=int, default=2024, help="從該頁取清單時使用的年度（預設 2024）")
-    parser.add_argument("--fallback-url", action="store_true", help="平台無檔時改抓公司網址（預設不啟用）")
-    parser.add_argument("-j", "--jobs", type=int, default=8, metavar="N", help="並行下載數（預設 8；設 1 則依序）")
+    parser = argparse.ArgumentParser(description="下載 ESG 報告書 PDF（TWSE ESG+）")
+    parser.add_argument("--csv", action="store_true", help="改用既有 CSV 清單")
+    parser.add_argument("--year", type=int, default=2024, help="年度（預設 2024）")
+    parser.add_argument("--fallback-url", action="store_true", help="平台無檔時改抓公司網址")
+    parser.add_argument("-j", "--jobs", type=int, default=8, metavar="N", help="並行下載數（預設 8）")
     args = parser.parse_args()
 
     if args.csv:
         csv_path = Path(DEFAULT_CSV)
         if not csv_path.exists():
-            raise SystemExit(f"找不到 CSV：{csv_path}。不加 --csv 會從該頁取清單。")
+            raise SystemExit(f"找不到 CSV：{csv_path}")
         rows = list(iter_rows(csv_path))
         print(f"使用既有清單 {csv_path.name}，共 {len(rows)} 筆。\n")
     else:
