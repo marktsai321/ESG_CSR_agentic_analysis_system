@@ -17,7 +17,59 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
+
+from dotenv import load_dotenv
+
+
+def ensure_api_key() -> None:
+    """Check for OPENAI_API_KEY; prompt the user if it is missing or placeholder."""
+    load_dotenv()
+    key = os.getenv("OPENAI_API_KEY", "")
+    if key and key != "your-api-key-here":
+        return
+
+    print("=" * 60)
+    print(" OPENAI_API_KEY 尚未設定")
+    print("=" * 60)
+    print()
+    print("本系統需要 OpenAI API Key 才能執行分析。")
+    print("您可以：")
+    print("  1. 將 Key 寫入 .env 檔案（建議）")
+    print("  2. 設定環境變數 export OPENAI_API_KEY=sk-...")
+    print("  3. 現在直接輸入")
+    print()
+
+    api_key = input("請輸入 OpenAI API Key（直接按 Enter 跳過）：").strip()
+    if not api_key:
+        print("\n[錯誤] 未提供 API Key，無法繼續。")
+        print("請設定後重新執行：")
+        print("  export OPENAI_API_KEY=sk-...")
+        print("  python main.py")
+        sys.exit(1)
+
+    # Persist to .env so the user doesn't have to enter it again
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_path):
+        content = open(env_path, "r", encoding="utf-8").read()
+        if "OPENAI_API_KEY" in content:
+            content = content.replace("your-api-key-here", api_key)
+            # Also handle empty value case
+            import re
+            content = re.sub(r"OPENAI_API_KEY=\s*\n", f"OPENAI_API_KEY={api_key}\n", content)
+        else:
+            content += f"\nOPENAI_API_KEY={api_key}\n"
+        open(env_path, "w", encoding="utf-8").write(content)
+    else:
+        open(env_path, "w", encoding="utf-8").write(f"OPENAI_API_KEY={api_key}\n")
+
+    os.environ["OPENAI_API_KEY"] = api_key
+    print("[OK] API Key 已儲存至 .env\n")
+
+
+# Validate API key before importing config (which reads .env at import time)
+ensure_api_key()
 
 from pipeline_state import PipelineState
 from agents.orchestrator import Pipeline
