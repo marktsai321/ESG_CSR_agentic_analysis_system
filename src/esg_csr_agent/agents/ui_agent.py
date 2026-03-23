@@ -11,7 +11,7 @@ All user-facing communication is in Chinese (zh).
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME
+from esg_csr_agent.config import OPENAI_MODEL_NAME
 
 
 def create_ui_agent() -> Agent:

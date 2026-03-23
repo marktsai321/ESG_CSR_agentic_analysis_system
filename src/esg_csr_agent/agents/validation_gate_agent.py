@@ -3,16 +3,15 @@ from __future__ import annotations
 """
 Validation Gate Agent
 =====================
-Quality checkpoint before report generation.
-Makes a go/no-go decision — does not fix problems itself.
+Quality checkpoint — go/no-go decision only.
 """
 
 import json
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, ANALYSIS_DIR, CONFIDENCE_THRESHOLD
-from pipeline_state import PipelineState
+from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR, CONFIDENCE_THRESHOLD
+from esg_csr_agent.pipeline_state import PipelineState
 
 
 def create_validation_gate_agent() -> Agent:
@@ -33,18 +32,8 @@ def create_validation_gate_agent() -> Agent:
 
 
 def validate(state: PipelineState) -> dict:
-    """
-    Run validation checks on the pipeline state.
-
-    Returns:
-        {
-            "passed": bool,
-            "checks": [{"name": str, "passed": bool, "detail": str}],
-        }
-    """
     checks: list[dict] = []
 
-    # Check 1: All requested analyses exist
     for company in state.companies:
         for year in state.years:
             for rtype in state.report_types:
@@ -57,7 +46,6 @@ def validate(state: PipelineState) -> dict:
                     "detail": str(analysis_path) if exists else f"缺少檔案: {analysis_path.name}",
                 })
 
-    # Check 2: Confidence scores above threshold
     for company in state.companies:
         for year in state.years:
             for rtype in state.report_types:
@@ -82,7 +70,6 @@ def validate(state: PipelineState) -> dict:
                         "detail": f"讀取失敗: {e}",
                     })
 
-    # Check 3: Cross-analysis flags
     for company in state.companies:
         for year in state.years:
             if len(state.report_types) < 2:
@@ -112,26 +99,20 @@ def validate(state: PipelineState) -> dict:
                 })
 
     all_passed = all(c["passed"] for c in checks)
-
     result = {"passed": all_passed, "checks": checks}
-    print(f"[驗證] {'通過 ✓' if all_passed else '未通過 ✗'} ({sum(1 for c in checks if c['passed'])}/{len(checks)} 項通過)")
-
+    print(f"[驗證] {'通過' if all_passed else '未通過'} ({sum(1 for c in checks if c['passed'])}/{len(checks)} 項通過)")
     return result
 
 
 def create_validation_task(agent: Agent, state: PipelineState) -> Task:
     return Task(
         description=(
-            "請執行管線品質驗證，檢查以下項目：\n"
+            "請執行管線品質驗證。\n"
             f"公司：{', '.join(state.companies)}\n"
             f"年度：{', '.join(str(y) for y in state.years)}\n"
             f"報告類型：{', '.join(state.report_types)}\n\n"
-            "驗證項目：\n"
-            "1. 所有請求的分析檔案是否存在\n"
-            f"2. 所有分析面向的信心分數是否 >= {CONFIDENCE_THRESHOLD}\n"
-            "3. 交叉分析中是否有未解決的高嚴重度矛盾\n\n"
-            "回報通過/不通過決定及詳細檢查結果。"
+            f"信心門檻：{CONFIDENCE_THRESHOLD}"
         ),
-        expected_output="驗證結果（通過/不通過，含各檢查項目詳情）",
+        expected_output="驗證結果（通過/不通過）",
         agent=agent,
     )

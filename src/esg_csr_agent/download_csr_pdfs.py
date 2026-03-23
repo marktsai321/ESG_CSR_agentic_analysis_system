@@ -1,23 +1,10 @@
 from __future__ import annotations
 
 """
-下載 MOPS 永續報告書 / CSR 報告書。
+CSR report downloader — MOPS platform.
 
-平台：公開資訊觀測站 (MOPS) — mopsov.twse.com.tw
-涵蓋年度：~2013（ROC 102）至今（包含舊版 CSR 與新版永續報告書）
-API 流程：
-  1. POST https://mops.twse.com.tw/mops/api/redirectToOld
-       body: {"apiName": "ajax_t100sb11", "parameters": {...}}
-     → 回傳 {"result": {"url": "https://mopsov.twse.com.tw/mops/web/ajax_t100sb11?parameters=HASH"}}
-  2. GET mopsov URL → HTML 表格，內含各公司的 PDF 下載連結
-  3. GET https://mopsov.twse.com.tw/server-java/FileDownLoad?step=9&filePath=...&fileName=...
-     → PDF 位元流
-
-  python download_csr_pdfs.py              # 取上市+上櫃，預設 2020 年度
-  python download_csr_pdfs.py --csv        # 使用既有 CSV 清單
-  python download_csr_pdfs.py --year 2019  # 指定年度（西元年）
-  python download_csr_pdfs.py --fallback-url  # 失敗時改抓公司網址
-  python download_csr_pdfs.py -j 8         # 並行下載
+  python -m esg_csr_agent.download_csr_pdfs              # default
+  python -m esg_csr_agent.download_csr_pdfs --year 2019  # specify year
 """
 
 import argparse
@@ -29,7 +16,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-from report_utils import ROOT, get_data_dir, iter_rows, safe_filename
+from esg_csr_agent.report_utils import ROOT, get_data_dir, iter_rows, safe_filename
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -54,7 +41,6 @@ FILE_STREAM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
-# Market types: sii=上市, otc=上櫃, rotc=興櫃, pub=公開發行
 MARKET_TYPES = ["sii", "otc"]
 
 DEFAULT_CSR_CSV = ROOT / "csr_sources_mops.csv"
@@ -64,19 +50,12 @@ DATA_DIR = get_data_dir("csr")
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _ce_to_roc(ce_year: int) -> str:
-    """Convert CE (Gregorian) year to ROC year string."""
     return str(ce_year - 1911)
 
 
 # ── API / HTML fetching ────────────────────────────────────────────────────────
 
 def _fetch_html_for_year_and_type(year_roc: str, typek: str, timeout: int = 60) -> str | None:
-    """
-    Two-step fetch:
-      1. POST redirectToOld → get mopsov redirect URL
-      2. GET redirect URL → return HTML string
-    Returns None on any failure.
-    """
     payload = {
         "apiName": "ajax_t100sb11",
         "parameters": {
@@ -116,26 +95,6 @@ def _fetch_html_for_year_and_type(year_roc: str, typek: str, timeout: int = 60) 
 
 
 def _parse_html_rows(html: str, year_ce: int) -> list[dict]:
-    """
-    Parse the mopsov HTML table and return normalised row dicts.
-
-    Table column layout (0-indexed, after expanding rowspan/colspan):
-      0  公司代號    1  公司名稱    2  英文簡稱
-      3  申報原因    4  產業類別    5  報告書內容涵蓋期間
-      6  編製依循準則
-      7  驗證單位    8  單位名稱    9  採用標準
-      10 公司網站報告書相關資訊(中文版)
-      11 中文版永續報告書檔案          ← ZH PDF (FileDownLoad href)
-      12 中文版上傳日期
-      13 英文版永續報告書網址           ← EN company URL
-      14 英文版永續報告書檔案           ← EN PDF (FileDownLoad href)
-      15 英文版上傳日期
-      16 中文版永續報告書(修正後版本)  ← ZH revised PDF
-      17 上傳日期(中文修正後版本)
-      18 英文版永續報告書(修正後版本)  ← EN revised PDF
-      19 上傳日期(英文修正後版本)
-      20 報告書聯絡資訊    21 備註
-    """
     soup = BeautifulSoup(html, "html.parser")
     rows: list[dict] = []
 
@@ -144,7 +103,6 @@ def _parse_html_rows(html: str, year_ce: int) -> list[dict]:
         return rows
 
     def _extract_filename(td) -> str:
-        """Get the fileName param from a FileDownLoad href, or empty string."""
         if td is None:
             return ""
         link = td.find("a")
@@ -160,7 +118,6 @@ def _parse_html_rows(html: str, year_ce: int) -> list[dict]:
         link = td.find("a")
         return (link.get("href") or "").strip() if link else ""
 
-    # Skip header rows (class="tblHead")
     data_rows = [
         tr for tr in table.find_all("tr")
         if "tblHead" not in (tr.get("class") or [])
@@ -178,7 +135,6 @@ def _parse_html_rows(html: str, year_ce: int) -> list[dict]:
         zh_filename = _extract_filename(tds[11] if len(tds) > 11 else None)
         en_url      = _extract_href(tds[13] if len(tds) > 13 else None)
         en_filename = _extract_filename(tds[14] if len(tds) > 14 else None)
-        # Prefer revised version (col 16 / 18) if original is missing
         if not zh_filename and len(tds) > 16:
             zh_filename = _extract_filename(tds[16])
         if not en_filename and len(tds) > 18:
@@ -186,35 +142,23 @@ def _parse_html_rows(html: str, year_ce: int) -> list[dict]:
 
         if zh_filename:
             rows.append({
-                "source":          "mops",
-                "company_id":      company_id,
-                "company_name":    company_name,
-                "sector":          sector,
-                "year":            str(year_ce),
-                "lang":            "zh",
-                "url":             "",
-                "mops_download_id": zh_filename,
+                "source": "mops", "company_id": company_id,
+                "company_name": company_name, "sector": sector,
+                "year": str(year_ce), "lang": "zh",
+                "url": "", "mops_download_id": zh_filename,
             })
         if en_filename:
             rows.append({
-                "source":          "mops",
-                "company_id":      company_id,
-                "company_name":    company_name,
-                "sector":          sector,
-                "year":            str(year_ce),
-                "lang":            "en",
-                "url":             en_url,
-                "mops_download_id": en_filename,
+                "source": "mops", "company_id": company_id,
+                "company_name": company_name, "sector": sector,
+                "year": str(year_ce), "lang": "en",
+                "url": en_url, "mops_download_id": en_filename,
             })
 
     return rows
 
 
 def _fetch_rows_from_page(year: int = 2020) -> list[dict]:
-    """
-    Fetch all CSR/sustainability report rows for a given CE year
-    across all configured market types.
-    """
     year_roc = _ce_to_roc(year)
     all_rows: list[dict] = []
     for typek in MARKET_TYPES:
@@ -230,10 +174,6 @@ def _fetch_rows_from_page(year: int = 2020) -> list[dict]:
 # ── Download ───────────────────────────────────────────────────────────────────
 
 def _try_mops_download(filename: str, timeout: int = 60) -> tuple[bytes, str] | tuple[None, str]:
-    """
-    Download a PDF from mopsov FileDownLoad endpoint.
-    Returns (content, content_type) on success, (None, reason) on failure.
-    """
     if not filename:
         return (None, "無 filename")
     try:
@@ -272,7 +212,6 @@ def download_one(row: dict, timeout: int = 60, platform_only: bool = True) -> Pa
     content = None
     ctype   = ""
 
-    # Primary: platform download via mopsov FileDownLoad
     if mops_id:
         print(f"[平台] {row.get('company_name')} {row.get('year')} {row.get('lang')} file={mops_id}")
         out, msg = _try_mops_download(mops_id, timeout=timeout)
@@ -282,7 +221,6 @@ def download_one(row: dict, timeout: int = 60, platform_only: bool = True) -> Pa
         else:
             print(f"      → 失敗: {msg}")
 
-    # Fallback: direct company URL (opt-in with --fallback-url)
     if content is None and url and not platform_only:
         print(f"[網址] {row.get('company_name')} {row.get('year')} {row.get('lang')} ← {url[:60]}...")
         try:
@@ -313,7 +251,7 @@ def download_one_with_retry(row: dict, retries: int = 2, **kwargs) -> Path | Non
         if result is not None:
             return result
         if attempt < retries:
-            time.sleep(2 ** attempt)  # 1s, 2s back-off
+            time.sleep(2 ** attempt)
     return None
 
 
@@ -321,16 +259,16 @@ def download_one_with_retry(row: dict, retries: int = 2, **kwargs) -> Path | Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="下載 MOPS 永續/CSR 報告書 PDF")
-    parser.add_argument("--csv", action="store_true", help="使用既有 CSV 清單，不從 MOPS 取")
-    parser.add_argument("--year", type=int, default=2020, help="CE 年度（預設 2020；CSR 有效範圍約 2013–2021）")
-    parser.add_argument("--fallback-url", action="store_true", help="平台無檔時改抓公司網址（預設不啟用）")
-    parser.add_argument("-j", "--jobs", type=int, default=8, metavar="N", help="並行下載數（預設 8；設 1 則依序）")
+    parser.add_argument("--csv", action="store_true", help="使用既有 CSV 清單")
+    parser.add_argument("--year", type=int, default=2020, help="CE 年度（預設 2020）")
+    parser.add_argument("--fallback-url", action="store_true", help="平台無檔時改抓公司網址")
+    parser.add_argument("-j", "--jobs", type=int, default=8, metavar="N", help="並行下載數（預設 8）")
     args = parser.parse_args()
 
     if args.csv:
         csv_path = DEFAULT_CSR_CSV
         if not csv_path.exists():
-            raise SystemExit(f"找不到 CSV：{csv_path}。不加 --csv 會從 MOPS 取清單。")
+            raise SystemExit(f"找不到 CSV：{csv_path}")
         rows = list(iter_rows(csv_path))
         print(f"使用既有清單 {csv_path.name}，共 {len(rows)} 筆。\n")
     else:
@@ -345,7 +283,7 @@ def main() -> None:
             )
             w.writeheader()
             w.writerows(rows)
-        print(f"  → 找到 {len(rows)} 筆可下載 PDF，CSV 已存至 {DEFAULT_CSR_CSV.name}，開始下載。\n")
+        print(f"  → 找到 {len(rows)} 筆，開始下載。\n")
 
     platform_only = not args.fallback_url
     if platform_only:

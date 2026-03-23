@@ -10,7 +10,7 @@ Currently supported: "chromadb".
 import abc
 from typing import Any
 
-import config as cfg
+import esg_csr_agent.config as cfg
 
 
 class VectorStore(abc.ABC):
@@ -93,7 +93,7 @@ class ChromaVectorStore(VectorStore):
             out.append({
                 "text": results["documents"][0][i],
                 "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                "score": 1.0 - results["distances"][0][i],  # cosine distance → similarity
+                "score": 1.0 - results["distances"][0][i],
             })
         return out
 

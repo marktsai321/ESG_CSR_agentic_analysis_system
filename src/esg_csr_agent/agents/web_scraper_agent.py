@@ -7,15 +7,9 @@ Downloads ESG and CSR PDF reports from official Taiwan regulatory platforms.
 Delegates actual downloading to download_reports.py.
 """
 
-import sys
-from pathlib import Path
-
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, RAW_PDF_DIR, LOGS_DIR
-
-# Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from esg_csr_agent.config import OPENAI_MODEL_NAME, RAW_PDF_DIR, LOGS_DIR
 
 
 def create_web_scraper_agent() -> Agent:
@@ -41,16 +35,8 @@ def run_download(
     fallback_url: bool = False,
     jobs: int = 8,
 ) -> dict:
-    """
-    Programmatic entry point called by the Orchestrator.
-
-    Returns:
-        {
-            "esg": {"downloaded": [paths], "failed": [company_ids]},
-            "csr": {"downloaded": [paths], "failed": [company_ids]},
-        }
-    """
-    import download_reports
+    """Programmatic entry point called by the Orchestrator."""
+    from esg_csr_agent import download_reports
 
     all_results: dict = {}
 

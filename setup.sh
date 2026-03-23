@@ -6,7 +6,7 @@
 #
 # What it does:
 #   1. Creates a Python virtual environment (.venv)
-#   2. Installs all dependencies from requirements.txt
+#   2. Installs the package and all dependencies (pip install .)
 #   3. Creates .env from .env.example if it doesn't exist
 #   4. Prompts for OPENAI_API_KEY if not already set in .env
 #   5. Creates the required directory structure
@@ -32,11 +32,11 @@ fi
 source .venv/bin/activate
 echo "      Python: $(python --version) @ $(which python)"
 
-# ── 2. Install dependencies ───────────────────────────────────
-echo "[2/4] 安裝相依套件..."
+# ── 2. Install package ────────────────────────────────────────
+echo "[2/4] 安裝 esg-csr-agent 及所有相依套件..."
 pip install --upgrade pip -q
-pip install -r requirements.txt -q
-echo "      完成。"
+pip install -e . -q
+echo "      完成。已安裝指令: esg-csr-agent"
 
 # ── 3. Create .env ────────────────────────────────────────────
 if [ ! -f ".env" ]; then
@@ -69,6 +69,6 @@ echo "============================================================"
 echo " 設定完成！使用方式："
 echo ""
 echo "   source .venv/bin/activate"
-echo "   python main.py                                  # 互動模式"
-echo "   python main.py --companies 2330 --years 2023    # 直接模式"
+echo "   esg-csr-agent                                   # 互動模式"
+echo "   esg-csr-agent --companies 2330 --years 2023     # 直接模式"
 echo "============================================================"

@@ -5,19 +5,19 @@ ESG/CSR Report Analysis System — Main Entry Point
 ==================================================
 
 Usage:
-    # Interactive mode (UI Agent collects requirements)
-    python main.py
+    # After installation:
+    esg-csr-agent                                        # interactive mode
+    esg-csr-agent --companies 2330 2317 --years 2023     # direct mode
+    esg-csr-agent --companies 2330 --years 2023 --types esg
 
-    # Direct mode (skip UI Agent)
-    python main.py --companies 2330 2317 --years 2023 --types both
-
-    # ESG only for a single company
-    python main.py --companies 2330 --years 2023 --types esg
+    # Or via Python module:
+    python -m esg_csr_agent --companies 2330 --years 2023
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 
 from dotenv import load_dotenv
@@ -46,17 +46,15 @@ def ensure_api_key() -> None:
         print("\n[錯誤] 未提供 API Key，無法繼續。")
         print("請設定後重新執行：")
         print("  export OPENAI_API_KEY=sk-...")
-        print("  python main.py")
+        print("  esg-csr-agent")
         sys.exit(1)
 
     # Persist to .env so the user doesn't have to enter it again
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_path = os.path.join(os.getcwd(), ".env")
     if os.path.exists(env_path):
         content = open(env_path, "r", encoding="utf-8").read()
         if "OPENAI_API_KEY" in content:
             content = content.replace("your-api-key-here", api_key)
-            # Also handle empty value case
-            import re
             content = re.sub(r"OPENAI_API_KEY=\s*\n", f"OPENAI_API_KEY={api_key}\n", content)
         else:
             content += f"\nOPENAI_API_KEY={api_key}\n"
@@ -68,21 +66,15 @@ def ensure_api_key() -> None:
     print("[OK] API Key 已儲存至 .env\n")
 
 
-# Validate API key before importing config (which reads .env at import time)
-ensure_api_key()
-
-from pipeline_state import PipelineState
-from agents.orchestrator import Pipeline
-
-
-def interactive_mode() -> PipelineState:
+def interactive_mode():
     """Collect requirements interactively (simplified UI Agent behaviour)."""
+    from esg_csr_agent.pipeline_state import PipelineState
+
     print("=" * 60)
     print("ESG/CSR 報告書分析系統")
     print("=" * 60)
     print()
 
-    # Collect company codes
     while True:
         raw = input("請輸入公司代號（空白分隔，如 2330 2317）：").strip()
         if raw:
@@ -90,7 +82,6 @@ def interactive_mode() -> PipelineState:
             break
         print("請至少輸入一個公司代號。")
 
-    # Collect years
     while True:
         raw = input("請輸入報告年度（空白分隔，如 2023）：").strip()
         if raw:
@@ -102,7 +93,6 @@ def interactive_mode() -> PipelineState:
         else:
             print("請至少輸入一個年度。")
 
-    # Collect report types
     raw = input("報告範圍 [esg/csr/both]（預設 both）：").strip().lower()
     if raw in ("esg", "csr"):
         report_types = [raw]
@@ -124,8 +114,10 @@ def interactive_mode() -> PipelineState:
     return state
 
 
-def direct_mode(args: argparse.Namespace) -> PipelineState:
+def direct_mode(args: argparse.Namespace):
     """Build state directly from CLI arguments."""
+    from esg_csr_agent.pipeline_state import PipelineState
+
     report_types = []
     if args.types in ("esg", "both"):
         report_types.append("esg")
@@ -140,6 +132,12 @@ def direct_mode(args: argparse.Namespace) -> PipelineState:
 
 
 def main() -> None:
+    # Validate API key first (before heavy imports)
+    ensure_api_key()
+
+    from esg_csr_agent.agents.orchestrator import Pipeline
+    from esg_csr_agent.config import LOGS_DIR
+
     parser = argparse.ArgumentParser(
         description="ESG/CSR 報告書分析系統",
     )
@@ -185,7 +183,7 @@ def main() -> None:
             print(f"  - [{f['agent']}] {f['step']}: {f['error']}")
 
     # Dump state for debugging
-    state_path = f"logs/pipeline_state_{final_state.run_id}.json"
+    state_path = LOGS_DIR / f"pipeline_state_{final_state.run_id}.json"
     with open(state_path, "w", encoding="utf-8") as fh:
         json.dump(final_state.to_dict(), fh, ensure_ascii=False, indent=2)
     print(f"\n管線狀態已儲存至 {state_path}")

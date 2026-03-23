@@ -3,11 +3,23 @@ from __future__ import annotations
 """Shared utilities for ESG and CSR report downloaders."""
 
 import csv
+import os
 from pathlib import Path
 from typing import Iterable
 
-# Project root: the directory containing this file
-ROOT = Path(__file__).resolve().parent
+# Project root: resolved at runtime so it works whether run from source or
+# from an installed package.  Prefer the CWD when a data/ directory already
+# exists there (typical project checkout); fall back to the directory that
+# contains this file (editable / source install).
+_THIS_DIR = Path(__file__).resolve().parent
+
+def _resolve_root() -> Path:
+    cwd = Path.cwd()
+    if (cwd / "data").is_dir() or (cwd / "CLAUDE.md").is_file():
+        return cwd
+    return _THIS_DIR
+
+ROOT = _resolve_root()
 
 
 def get_data_dir(report_type: str) -> Path:

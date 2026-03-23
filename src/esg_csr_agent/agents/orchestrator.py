@@ -3,10 +3,7 @@ from __future__ import annotations
 """
 Orchestrator Agent
 ==================
-Central coordinator. Owns the pipeline state machine, sequences agent
-execution, monitors progress, and routes failures to the Fail Handler.
-
-Does NOT perform analysis, interact with the user directly, or write files.
+Central coordinator — pipeline state machine.
 """
 
 import traceback
@@ -14,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from crewai import Agent
 
-from config import OPENAI_MODEL_NAME
-from pipeline_state import PipelineState
+from esg_csr_agent.config import OPENAI_MODEL_NAME
+from esg_csr_agent.pipeline_state import PipelineState
 
 
 def create_orchestrator_agent() -> Agent:
@@ -41,7 +38,6 @@ class Pipeline:
         self.state = state
 
     def run(self) -> PipelineState:
-        """Execute the full pipeline sequentially with parallel analysis."""
         stages = [
             ("web_scraper", self._stage_download),
             ("text_extraction", self._stage_extract),
@@ -71,9 +67,8 @@ class Pipeline:
         return self.state
 
     def _stage_download(self) -> None:
-        from agents.web_scraper_agent import run_download
+        from esg_csr_agent.agents.web_scraper_agent import run_download
 
-        # CSR year range warning
         for year in self.state.years:
             if year >= 2022 and "csr" in self.state.report_types:
                 print(f"[WARN] {year} 年度 CSR 報告書可能不存在（已改為 ESG 永續報告書）")
@@ -86,19 +81,17 @@ class Pipeline:
 
         for rtype, info in results.items():
             for path in info["downloaded"]:
-                # Infer key from filename (e.g., 2330_2023_zh.pdf → look up)
                 self.state.add_file("raw_pdfs", path, path)
             for cid in info["failed"]:
                 self.state.add_failure("web_scraper", "download", f"下載失敗: {cid}")
 
     def _stage_extract(self) -> None:
-        from agents.text_extraction_agent import extract_text_from_pdf
+        from esg_csr_agent.agents.text_extraction_agent import extract_text_from_pdf
 
         for company in self.state.companies:
             for year in self.state.years:
                 for rtype in self.state.report_types:
                     key = self.state.file_key(company, year, rtype)
-                    # Find the corresponding PDF
                     pdf_path = self._find_pdf(company, year, rtype)
                     if not pdf_path:
                         print(f"[SKIP] 找不到 PDF: {key}")
@@ -110,7 +103,7 @@ class Pipeline:
                         self.state.add_failure("text_extraction", key, f"擷取失敗: {pdf_path}")
 
     def _stage_chunk_embed(self) -> None:
-        from agents.chunk_embed_agent import chunk_and_embed
+        from esg_csr_agent.agents.chunk_embed_agent import chunk_and_embed
 
         for key, text_path in self.state.files.get("extracted_text", {}).items():
             result = chunk_and_embed(text_path, key)
@@ -119,8 +112,8 @@ class Pipeline:
 
     def _stage_analysis(self) -> None:
         """Run ESG and CSR analysis in parallel."""
-        from agents.esg_analysis_agent import analyze_esg
-        from agents.csr_analysis_agent import analyze_csr
+        from esg_csr_agent.agents.esg_analysis_agent import analyze_esg
+        from esg_csr_agent.agents.csr_analysis_agent import analyze_csr
 
         tasks = []
         for company in self.state.companies:
@@ -142,7 +135,6 @@ class Pipeline:
             except Exception as e:
                 return {"error": str(e), "type": rtype, "company_id": cid, "year": yr}
 
-        # Parallel execution — ESG and CSR share no mutable state
         with ThreadPoolExecutor(max_workers=len(tasks) or 1) as ex:
             futures = {ex.submit(_run_analysis, t): t for t in tasks}
             for future in as_completed(futures):
@@ -156,7 +148,7 @@ class Pipeline:
                     self.state.add_file("analysis", key, str(result))
 
     def _stage_cross_analysis(self) -> None:
-        from agents.cross_analysis_agent import cross_analyze
+        from esg_csr_agent.agents.cross_analysis_agent import cross_analyze
 
         for company in self.state.companies:
             for year in self.state.years:
@@ -167,7 +159,7 @@ class Pipeline:
                         self.state.add_failure("cross_analysis", f"{company}_{year}", str(e))
 
     def _stage_validation(self) -> None:
-        from agents.validation_gate_agent import validate
+        from esg_csr_agent.agents.validation_gate_agent import validate
 
         result = validate(self.state)
         self.state.validation_passed = result["passed"]
@@ -177,17 +169,16 @@ class Pipeline:
             print(f"[驗證] {len(failed_checks)} 項未通過:")
             for c in failed_checks:
                 print(f"  - {c['name']}: {c['detail']}")
-            # Continue anyway — the report will note the issues
 
     def _stage_revision(self) -> None:
-        from agents.report_revision_agent import revise_report
+        from esg_csr_agent.agents.report_revision_agent import revise_report
 
         result = revise_report(self.state)
         if not result:
             self.state.add_failure("revision", "generate_markdown", "修訂報告產生失敗")
 
     def _stage_output(self) -> None:
-        from agents.output_delivery_agent import generate_pdf
+        from esg_csr_agent.agents.output_delivery_agent import generate_pdf
 
         result = generate_pdf(self.state)
         if result:
@@ -196,29 +187,23 @@ class Pipeline:
             self.state.add_failure("output", "generate_pdf", "PDF 產生失敗")
 
     def _handle_failure(self, failure: dict) -> None:
-        """Route a failure to the Fail Handler for advisory diagnosis."""
-        from agents.fail_handler_agent import diagnose
+        from esg_csr_agent.agents.fail_handler_agent import diagnose
 
         diagnosis = diagnose(failure)
         print(f"[失敗處理] 建議: {diagnosis['proposals']}")
-        # Orchestrator decides — for now, log and continue
-        # Future: implement recovery logic based on diagnosis
 
     def _find_pdf(self, company_id: str, year: int, report_type: str) -> str | None:
-        """Locate the downloaded PDF for a given company/year/type."""
-        from config import RAW_PDF_DIR
+        from esg_csr_agent.config import RAW_PDF_DIR
 
         pdf_dir = RAW_PDF_DIR / report_type
         if not pdf_dir.exists():
             return None
 
-        # Look for files matching the pattern {company_id}_{year}_*.pdf
         pattern = f"{company_id}_{year}_*.pdf"
         matches = list(pdf_dir.glob(pattern))
         if matches:
             return str(matches[0])
 
-        # Broader search
         for f in pdf_dir.iterdir():
             if f.suffix == ".pdf" and company_id in f.name and str(year) in f.name:
                 return str(f)

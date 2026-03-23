@@ -11,7 +11,7 @@ from pathlib import Path
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME, CHUNK_SIZE, CHUNK_OVERLAP, EMBEDDING_MODEL_NAME
+from esg_csr_agent.config import OPENAI_MODEL_NAME, CHUNK_SIZE, CHUNK_OVERLAP, EMBEDDING_MODEL_NAME
 
 
 def create_chunk_embed_agent() -> Agent:
@@ -59,7 +59,7 @@ def chunk_and_embed(
     namespace: str,
 ) -> dict:
     """
-    Full pipeline: read text → chunk → embed → store in vector DB.
+    Full pipeline: read text -> chunk -> embed -> store in vector DB.
 
     Args:
         text_path: Path to extracted text file.
@@ -68,7 +68,7 @@ def chunk_and_embed(
     Returns:
         {"namespace": str, "chunk_count": int, "status": "ok"|"error", "error": str|None}
     """
-    from vector_store import get_vector_store
+    from esg_csr_agent.vector_store import get_vector_store
 
     vs = get_vector_store()
 

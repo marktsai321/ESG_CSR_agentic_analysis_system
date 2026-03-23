@@ -3,13 +3,12 @@ from __future__ import annotations
 """
 Fail Handler Agent
 ==================
-Diagnoses failures and proposes recovery actions.
-Advisory only — does NOT execute recovery itself.
+Diagnoses failures and proposes recovery actions. Advisory only.
 """
 
 from crewai import Agent, Task
 
-from config import OPENAI_MODEL_NAME
+from esg_csr_agent.config import OPENAI_MODEL_NAME
 
 
 def create_fail_handler_agent() -> Agent:
@@ -19,8 +18,7 @@ def create_fail_handler_agent() -> Agent:
         backstory=(
             "你是管線的故障診斷專家。"
             "當任何代理逾時、發生例外或反覆重試時，協調者會啟動你。"
-            "你會將失敗分類（爬蟲失敗、OCR 失敗、分析迴圈、信心不足、上游依賴缺失），"
-            "並提出具體的復原建議。"
+            "你會將失敗分類並提出具體的復原建議。"
             "你只提供建議，不直接呼叫其他代理。"
         ),
         verbose=True,
@@ -74,20 +72,6 @@ FAILURE_CATEGORIES = {
 
 
 def diagnose(failure: dict) -> dict:
-    """
-    Diagnose a failure and propose recovery.
-
-    Args:
-        failure: {"agent": str, "step": str, "error": str, "context": dict}
-
-    Returns:
-        {
-            "category": str,
-            "description": str,
-            "proposals": [{"action": str, "detail": str}],
-            "original_failure": dict,
-        }
-    """
     error_lower = (failure.get("error", "") + " " + failure.get("step", "")).lower()
 
     matched_category = "unknown"
@@ -122,15 +106,12 @@ def diagnose(failure: dict) -> dict:
 def create_diagnosis_task(agent: Agent, failure: dict) -> Task:
     return Task(
         description=(
-            f"請診斷以下管線失敗並提出復原建議：\n\n"
+            f"請診斷以下管線失敗：\n\n"
             f"失敗代理：{failure.get('agent', '未知')}\n"
             f"失敗步驟：{failure.get('step', '未知')}\n"
-            f"錯誤訊息：{failure.get('error', '未知')}\n"
-            f"上下文：{failure.get('context', {})}\n\n"
-            "請分類失敗原因（爬蟲失敗/OCR失敗/分析迴圈/信心不足/上游依賴缺失），"
-            "並提出具體的復原行動建議。\n"
-            "注意：你只提供建議，不直接執行復原。"
+            f"錯誤訊息：{failure.get('error', '未知')}\n\n"
+            "請分類失敗原因並提出復原建議。"
         ),
-        expected_output="失敗診斷結果及復原建議（JSON 格式）",
+        expected_output="失敗診斷結果及復原建議",
         agent=agent,
     )
