@@ -11,6 +11,7 @@ import json
 from crewai import Agent, Task
 
 from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR
+from esg_csr_agent.llm_client import chat_completion
 
 
 def create_cross_analysis_agent() -> Agent:
@@ -28,6 +29,40 @@ def create_cross_analysis_agent() -> Agent:
         allow_delegation=False,
         llm=OPENAI_MODEL_NAME,
     )
+
+
+def _cross_analyze_with_llm(company_id: str, year: int, esg_data: dict, csr_data: dict) -> dict:
+    """Use LLM to compare ESG and CSR analysis findings."""
+    esg_summary = {}
+    for dim, info in esg_data.get("dimensions", {}).items():
+        esg_summary[dim] = {"findings": info.get("findings", ""), "metrics": info.get("metrics", {})}
+
+    csr_summary = {}
+    for dim, info in csr_data.get("dimensions", {}).items():
+        csr_summary[dim] = {"findings": info.get("findings", ""), "metrics": info.get("metrics", {})}
+
+    prompt = (
+        f"你是 ESG/CSR 交叉分析專家。以下是公司 {company_id} 的 {year} 年度分析結果：\n\n"
+        f"=== ESG 分析 ===\n{json.dumps(esg_summary, ensure_ascii=False, indent=2)}\n\n"
+        f"=== CSR 分析 ===\n{json.dumps(csr_summary, ensure_ascii=False, indent=2)}\n\n"
+        "請比對兩份分析結果，以 JSON 格式回傳：\n"
+        '1. "contradictions": 列表，每項包含 {"dimension": str, "note": str, "severity": "high"|"medium"|"low"}\n'
+        '2. "alignments": 列表，每項包含 {"dimension": str, "note": str}\n'
+        '3. "gaps": 列表，每項包含 {"dimension": str, "source": "esg"|"csr", "note": str}\n\n'
+        "請只回傳 JSON，不要加 markdown 標記或其他文字。"
+    )
+
+    raw = chat_completion(prompt, temperature=0.2, max_tokens=2000).strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"contradictions": [], "alignments": [], "gaps": []}
 
 
 def cross_analyze(company_id: str, year: int) -> dict:
@@ -56,32 +91,15 @@ def cross_analyze(company_id: str, year: int) -> dict:
     }
 
     if esg_data and csr_data:
-        esg_env = esg_data.get("dimensions", {}).get("environmental", {})
-        csr_env = csr_data.get("dimensions", {}).get("environmental_stewardship", {})
-        if esg_env and csr_env:
-            cross_result["alignments"].append({
-                "dimension": "環境",
-                "note": "ESG 與 CSR 報告均涵蓋環境面向",
-                "esg_chunks": esg_env.get("retrieved_chunks", 0),
-                "csr_chunks": csr_env.get("retrieved_chunks", 0),
-            })
-
-        esg_social = esg_data.get("dimensions", {}).get("social", {})
-        csr_employee = csr_data.get("dimensions", {}).get("employee_relations", {})
-        if esg_social and csr_employee:
-            cross_result["alignments"].append({
-                "dimension": "社會/員工",
-                "note": "ESG 社會面向與 CSR 員工關係可交叉比對",
-                "esg_chunks": esg_social.get("retrieved_chunks", 0),
-                "csr_chunks": csr_employee.get("retrieved_chunks", 0),
-            })
-
-        if not csr_data.get("dimensions", {}).get("stakeholder_engagement", {}).get("retrieved_chunks"):
-            cross_result["gaps"].append({
-                "dimension": "利害關係人溝通",
-                "source": "csr",
-                "note": "CSR 報告中未找到相關內容",
-            })
+        llm_result = _cross_analyze_with_llm(company_id, year, esg_data, csr_data)
+        cross_result["contradictions"] = llm_result.get("contradictions", [])
+        cross_result["alignments"] = llm_result.get("alignments", [])
+        cross_result["gaps"] = llm_result.get("gaps", [])
+        # Propagate high-severity contradictions as flags
+        cross_result["flags"] = [
+            c for c in cross_result["contradictions"]
+            if c.get("severity") == "high"
+        ]
     elif not esg_data:
         cross_result["gaps"].append({
             "dimension": "全部", "source": "esg",

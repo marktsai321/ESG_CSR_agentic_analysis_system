@@ -33,11 +33,16 @@ def create_validation_gate_agent() -> Agent:
 
 def validate(state: PipelineState) -> dict:
     checks: list[dict] = []
+    extracted = state.files.get("extracted_text", {})
 
     for company in state.companies:
         for year in state.years:
             for rtype in state.report_types:
                 key = state.file_key(company, year, rtype)
+                # Skip validation for report types that had no source PDF/text
+                if key not in extracted:
+                    print(f"[驗證] 跳過 {key}（無原始資料可供分析）")
+                    continue
                 analysis_path = ANALYSIS_DIR / f"{key}.json"
                 exists = analysis_path.exists()
                 checks.append({
@@ -50,6 +55,8 @@ def validate(state: PipelineState) -> dict:
         for year in state.years:
             for rtype in state.report_types:
                 key = state.file_key(company, year, rtype)
+                if key not in extracted:
+                    continue
                 analysis_path = ANALYSIS_DIR / f"{key}.json"
                 if not analysis_path.exists():
                     continue

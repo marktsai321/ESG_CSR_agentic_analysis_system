@@ -115,15 +115,22 @@ class Pipeline:
         from esg_csr_agent.agents.esg_analysis_agent import analyze_esg
         from esg_csr_agent.agents.csr_analysis_agent import analyze_csr
 
+        extracted = self.state.files.get("extracted_text", {})
         tasks = []
         for company in self.state.companies:
             for year in self.state.years:
                 if "esg" in self.state.report_types:
                     ns = self.state.file_key(company, year, "esg")
-                    tasks.append(("esg", company, year, ns))
+                    if ns in extracted:
+                        tasks.append(("esg", company, year, ns))
+                    else:
+                        print(f"[SKIP] 無擷取文字，跳過 ESG 分析: {ns}")
                 if "csr" in self.state.report_types:
                     ns = self.state.file_key(company, year, "csr")
-                    tasks.append(("csr", company, year, ns))
+                    if ns in extracted:
+                        tasks.append(("csr", company, year, ns))
+                    else:
+                        print(f"[SKIP] 無擷取文字，跳過 CSR 分析: {ns}")
 
         def _run_analysis(task_info):
             rtype, cid, yr, ns = task_info
@@ -202,6 +209,10 @@ class Pipeline:
         pattern = f"{company_id}_{year}_*.pdf"
         matches = list(pdf_dir.glob(pattern))
         if matches:
+            # Prefer zh (Chinese) file for analysis
+            zh_matches = [m for m in matches if "_zh" in m.name]
+            if zh_matches:
+                return str(zh_matches[0])
             return str(matches[0])
 
         for f in pdf_dir.iterdir():
