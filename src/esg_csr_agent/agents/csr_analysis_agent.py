@@ -12,6 +12,7 @@ from pathlib import Path
 from crewai import Agent, Task
 
 from esg_csr_agent.config import OPENAI_MODEL_NAME, ANALYSIS_DIR
+from esg_csr_agent.llm_client import chat_completion
 
 
 def create_csr_analysis_agent() -> Agent:
@@ -76,6 +77,49 @@ def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> lis
     return all_texts
 
 
+CSR_DIM_LABELS = {
+    "stakeholder_engagement": "利害關係人溝通與鑑別",
+    "material_topics": "重大議題鑑別與排序",
+    "community_investment": "社區投入與公益活動",
+    "employee_relations": "員工關係（薪資福利、職業安全、人才發展）",
+    "environmental_stewardship": "環境管理（污染防治、節能減碳、綠色採購）",
+}
+
+
+def _analyze_dimension_with_llm(
+    company_id: str, year: int, dimension: str, context_chunks: list[str],
+) -> dict:
+    """Call the LLM to produce structured findings for one CSR dimension."""
+    context_text = "\n\n---\n\n".join(context_chunks[:15])
+    dim_label = CSR_DIM_LABELS.get(dimension, dimension)
+
+    prompt = (
+        f"你是企業社會責任（CSR）報告書分析專家。以下是公司 {company_id} 的 {year} 年度 CSR 報告書中"
+        f"與「{dim_label}」相關的段落摘錄：\n\n"
+        f"{context_text}\n\n"
+        "請根據以上內容，以 JSON 格式回傳分析結果，包含以下欄位：\n"
+        '1. "findings": 字串，200-500 字的中文分析結論，涵蓋主要發現和趨勢\n'
+        '2. "metrics": 物件，從報告中擷取的關鍵量化指標，格式為 {指標名稱: 數值或描述}\n'
+        '3. "confidence": 浮點數 0.0-1.0，根據資料充分性和明確性給出的信心分數。'
+        "若有清楚的數據和說明則 0.7 以上，若資料模糊或不完整則 0.3-0.6，若幾乎無相關內容則 0.3 以下。\n\n"
+        "請只回傳 JSON，不要加 markdown 標記或其他文字。"
+    )
+
+    raw = chat_completion(prompt, temperature=0.2, max_tokens=2000).strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        result = {"findings": raw, "metrics": {}, "confidence": 0.4}
+
+    return result
+
+
 def analyze_csr(company_id: str, year: int, namespace: str) -> dict:
     output_path = ANALYSIS_DIR / f"{company_id}_{year}_csr.json"
 
@@ -94,13 +138,26 @@ def analyze_csr(company_id: str, year: int, namespace: str) -> dict:
     }
 
     for dimension, queries in CSR_QUERIES.items():
+        print(f"  [CSR] 分析 {dimension}...")
         context_chunks = _retrieve_context(namespace, queries)
+
+        if not context_chunks:
+            analysis["dimensions"][dimension] = {
+                "retrieved_chunks": 0,
+                "context_summary": "",
+                "findings": "無相關內容可供分析。",
+                "metrics": {},
+                "confidence": 0.0,
+            }
+            continue
+
+        llm_result = _analyze_dimension_with_llm(company_id, year, dimension, context_chunks)
         analysis["dimensions"][dimension] = {
             "retrieved_chunks": len(context_chunks),
-            "context_summary": "\n".join(context_chunks[:10]),
-            "findings": "",
-            "metrics": {},
-            "confidence": 0.0,
+            "context_summary": "\n".join(context_chunks[:5]),
+            "findings": llm_result.get("findings", ""),
+            "metrics": llm_result.get("metrics", {}),
+            "confidence": float(llm_result.get("confidence", 0.0)),
         }
 
     output_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")
