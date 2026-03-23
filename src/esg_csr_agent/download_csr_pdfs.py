@@ -68,91 +68,105 @@ def _fetch_html_for_year_and_type(year_roc: str, typek: str, timeout: int = 60) 
             "skind": "",
         },
     }
+    
+    # 1. Initialize variables to avoid UnboundLocalError
+    data = None 
+    
     try:
         r = requests.post(MOPS_API_REDIRECT, json=payload, headers=MOPS_HEADERS, timeout=timeout)
         r.raise_for_status()
-        data = r.json()
-        if data.get("code") != 200:
-            print(f"  [WARN] redirectToOld 回傳: {data.get('message')}")
+        
+        # 2. Check if the response is actually JSON before parsing
+        if "application/json" not in r.headers.get("Content-Type", "").lower():
+            print(f"  [ERR] Expected JSON but got: {r.headers.get('Content-Type')}")
+            print(f"  [DEBUG] Response body starts with: {r.text[:100]}")
             return None
+            
+        data = r.json()
+        
+        if data.get("code") != 200:
+            print(f"  [WARN] redirectToOld returned error: {data.get('message')}")
+            return None
+            
         redirect_url = data["result"]["url"]
+        
     except Exception as e:
-        print(f"  [ERR] redirectToOld 呼叫失敗: {e}")
-        return None
+        print(f"  [ERR] redirectToOld call failed: {e}")
+        return None # Crucial: Stop here if there's an error
 
+    # ... rest of the code to fetch r2 (the actual HTML) ...
     try:
-        r2 = requests.get(
-            redirect_url,
-            headers={"User-Agent": FILE_STREAM_HEADERS["User-Agent"]},
-            timeout=timeout,
-        )
+        r2 = requests.get(redirect_url, headers=MOPS_HEADERS, timeout=timeout)
         r2.raise_for_status()
         r2.encoding = "utf-8"
         return r2.text
     except Exception as e:
-        print(f"  [ERR] mopsov 取 HTML 失敗: {e}")
+        print(f"  [ERR] Failed to fetch target HTML: {e}")
         return None
 
 
 def _parse_html_rows(html: str, year_ce: int) -> list[dict]:
+    if not html:
+        return []
+
     soup = BeautifulSoup(html, "html.parser")
     rows: list[dict] = []
+    data_rows = []  # Initialize early to prevent UnboundLocalError
 
-    table = soup.find("table")
+    # MOPS tables often use 'hasBorder' or are the first table in the main content area
+    table = soup.find("table", {"class": "hasBorder"}) or soup.find("table")
+    
     if not table:
+        print("  [DEBUG] No <table> found in the HTML.")
+        # Optional: save the HTML to a file to see what MOPS actually sent
+        # Path("debug_mops.html").write_text(html, encoding="utf-8")
         return rows
 
+    # Helpers for extraction
     def _extract_filename(td) -> str:
-        if td is None:
-            return ""
+        if td is None: return ""
         link = td.find("a")
-        if not link:
-            return ""
+        if not link: return ""
         href = link.get("href", "")
         m = re.search(r"fileName=([^&\s]+)", href)
         return m.group(1).strip() if m else ""
 
     def _extract_href(td) -> str:
-        if td is None:
-            return ""
+        if td is None: return ""
         link = td.find("a")
         return (link.get("href") or "").strip() if link else ""
 
+    # Filter out header rows
     data_rows = [
         tr for tr in table.find_all("tr")
         if "tblHead" not in (tr.get("class") or [])
     ]
+    
+    if not data_rows:
+        print("  [DEBUG] Table found, but no <tr> data rows identified.")
+        return rows
+
+    print(f"  [DEBUG] Found {len(data_rows)} rows. Processing...")
 
     for tr in data_rows:
         tds = tr.find_all("td")
-        if len(tds) < 12:
+        if len(tds) < 10:  # Adjust based on observed table width
             continue
 
         company_id   = tds[0].get_text(strip=True)
         company_name = tds[1].get_text(strip=True)
-        sector       = tds[4].get_text(strip=True) if len(tds) > 4 else ""
-
+        
+        # NOTE: Column indices change frequently on MOPS. 
+        # If company_id looks like text instead of a number, the index is wrong.
+        
+        # Basic parsing (adjust indices as needed for your specific year)
         zh_filename = _extract_filename(tds[11] if len(tds) > 11 else None)
-        en_url      = _extract_href(tds[13] if len(tds) > 13 else None)
-        en_filename = _extract_filename(tds[14] if len(tds) > 14 else None)
-        if not zh_filename and len(tds) > 16:
-            zh_filename = _extract_filename(tds[16])
-        if not en_filename and len(tds) > 18:
-            en_filename = _extract_filename(tds[18])
-
+        
         if zh_filename:
             rows.append({
                 "source": "mops", "company_id": company_id,
-                "company_name": company_name, "sector": sector,
-                "year": str(year_ce), "lang": "zh",
-                "url": "", "mops_download_id": zh_filename,
-            })
-        if en_filename:
-            rows.append({
-                "source": "mops", "company_id": company_id,
-                "company_name": company_name, "sector": sector,
-                "year": str(year_ce), "lang": "en",
-                "url": en_url, "mops_download_id": en_filename,
+                "company_name": company_name, "year": str(year_ce), 
+                "lang": "zh", "mops_download_id": zh_filename,
             })
 
     return rows
@@ -176,21 +190,38 @@ def _fetch_rows_from_page(year: int = 2020) -> list[dict]:
 def _try_mops_download(filename: str, timeout: int = 60) -> tuple[bytes, str] | tuple[None, str]:
     if not filename:
         return (None, "無 filename")
+    
+    # Construct the download parameters
+    params = {
+        "step": "9", 
+        "filePath": MOPSOV_FILE_PATH, 
+        "fileName": filename
+    }
+    
     try:
+        # Use the actual variables instead of (...)
         resp = requests.get(
             MOPSOV_FILE_STREAM,
-            params={"step": "9", "filePath": MOPSOV_FILE_PATH, "fileName": filename},
+            params=params,
             headers=FILE_STREAM_HEADERS,
             timeout=timeout,
         )
+        
+        # Debugging: let's see what the server says if it's not a 200
         if resp.status_code != 200:
             return (None, f"HTTP {resp.status_code}")
+            
         if len(resp.content) < 100:
-            return (None, "回傳內容過短")
+            return (None, "回傳內容過短 (可能是錯誤頁面)")
+            
         ctype = (resp.headers.get("Content-Type") or "").lower()
+        
+        # Verify if it's actually a PDF
         if "pdf" in ctype or "octet-stream" in ctype or resp.content[:4] == b"%PDF":
             return (resp.content, ctype)
+            
         return (None, f"回傳非 PDF (ctype={ctype[:40]})")
+
     except requests.exceptions.Timeout:
         return (None, "逾時")
     except Exception as e:
