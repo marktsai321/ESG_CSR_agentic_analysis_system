@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+"""
+Validation Gate Agent
+=====================
+Quality checkpoint before report generation.
+Makes a go/no-go decision — does not fix problems itself.
+"""
+
+import json
+
+from crewai import Agent, Task
+
+from config import OPENAI_MODEL_NAME, ANALYSIS_DIR, CONFIDENCE_THRESHOLD
+from pipeline_state import PipelineState
+
+
+def create_validation_gate_agent() -> Agent:
+    return Agent(
+        role="驗證閘門代理",
+        goal="在報告產生前進行品質檢查，確保所有分析結果完整且達到信心門檻。",
+        backstory=(
+            "你是管線的品質守門員。"
+            "你驗證所有請求的公司和年度都有分析輸出、"
+            "沒有分析面向的信心分數低於門檻值、"
+            "且交叉分析中沒有未解決的高嚴重度矛盾。"
+            "你只做通過/不通過的決定，不修復問題。"
+        ),
+        verbose=True,
+        allow_delegation=False,
+        llm=OPENAI_MODEL_NAME,
+    )
+
+
+def validate(state: PipelineState) -> dict:
+    """
+    Run validation checks on the pipeline state.
+
+    Returns:
+        {
+            "passed": bool,
+            "checks": [{"name": str, "passed": bool, "detail": str}],
+        }
+    """
+    checks: list[dict] = []
+
+    # Check 1: All requested analyses exist
+    for company in state.companies:
+        for year in state.years:
+            for rtype in state.report_types:
+                key = state.file_key(company, year, rtype)
+                analysis_path = ANALYSIS_DIR / f"{key}.json"
+                exists = analysis_path.exists()
+                checks.append({
+                    "name": f"分析檔案存在: {key}",
+                    "passed": exists,
+                    "detail": str(analysis_path) if exists else f"缺少檔案: {analysis_path.name}",
+                })
+
+    # Check 2: Confidence scores above threshold
+    for company in state.companies:
+        for year in state.years:
+            for rtype in state.report_types:
+                key = state.file_key(company, year, rtype)
+                analysis_path = ANALYSIS_DIR / f"{key}.json"
+                if not analysis_path.exists():
+                    continue
+                try:
+                    data = json.loads(analysis_path.read_text(encoding="utf-8"))
+                    for dim_name, dim_data in data.get("dimensions", {}).items():
+                        conf = dim_data.get("confidence", 0.0)
+                        passed = conf >= CONFIDENCE_THRESHOLD
+                        checks.append({
+                            "name": f"信心分數: {key}/{dim_name}",
+                            "passed": passed,
+                            "detail": f"confidence={conf:.2f} (門檻={CONFIDENCE_THRESHOLD})",
+                        })
+                except Exception as e:
+                    checks.append({
+                        "name": f"讀取分析結果: {key}",
+                        "passed": False,
+                        "detail": f"讀取失敗: {e}",
+                    })
+
+    # Check 3: Cross-analysis flags
+    for company in state.companies:
+        for year in state.years:
+            if len(state.report_types) < 2:
+                continue
+            cross_path = ANALYSIS_DIR / f"{company}_{year}_cross.json"
+            if not cross_path.exists():
+                checks.append({
+                    "name": f"交叉分析: {company}_{year}",
+                    "passed": False,
+                    "detail": "交叉分析結果不存在",
+                })
+                continue
+            try:
+                cross = json.loads(cross_path.read_text(encoding="utf-8"))
+                high_sev = [f for f in cross.get("flags", []) if f.get("severity") == "high"]
+                passed = len(high_sev) == 0
+                checks.append({
+                    "name": f"交叉分析高嚴重度: {company}_{year}",
+                    "passed": passed,
+                    "detail": f"{len(high_sev)} 個高嚴重度矛盾" if not passed else "無高嚴重度矛盾",
+                })
+            except Exception as e:
+                checks.append({
+                    "name": f"讀取交叉分析: {company}_{year}",
+                    "passed": False,
+                    "detail": f"讀取失敗: {e}",
+                })
+
+    all_passed = all(c["passed"] for c in checks)
+
+    result = {"passed": all_passed, "checks": checks}
+    print(f"[驗證] {'通過 ✓' if all_passed else '未通過 ✗'} ({sum(1 for c in checks if c['passed'])}/{len(checks)} 項通過)")
+
+    return result
+
+
+def create_validation_task(agent: Agent, state: PipelineState) -> Task:
+    return Task(
+        description=(
+            "請執行管線品質驗證，檢查以下項目：\n"
+            f"公司：{', '.join(state.companies)}\n"
+            f"年度：{', '.join(str(y) for y in state.years)}\n"
+            f"報告類型：{', '.join(state.report_types)}\n\n"
+            "驗證項目：\n"
+            "1. 所有請求的分析檔案是否存在\n"
+            f"2. 所有分析面向的信心分數是否 >= {CONFIDENCE_THRESHOLD}\n"
+            "3. 交叉分析中是否有未解決的高嚴重度矛盾\n\n"
+            "回報通過/不通過決定及詳細檢查結果。"
+        ),
+        expected_output="驗證結果（通過/不通過，含各檢查項目詳情）",
+        agent=agent,
+    )
