@@ -37,7 +37,11 @@ def run(
         print(f"\n{'='*60}")
         print(f"ESG 報告書下載  年度={esg_year}  公司代號={company_codes or '全部'}")
         print(f"{'='*60}")
-        rows = esg_mod._fetch_rows_from_page(year=esg_year)
+        try:
+            rows = esg_mod._fetch_rows_from_page(year=esg_year)
+        except Exception as e:
+            print(f"[ERR] ESG 清單取得失敗: {e}")
+            rows = []
         if company_codes:
             rows = [r for r in rows if r.get("company_id") in company_codes]
         downloaded, failed = _run_downloads(rows, esg_mod.download_one_with_retry, jobs, fallback_url)
@@ -50,7 +54,11 @@ def run(
         print(f"\n{'='*60}")
         print(f"CSR 報告書下載  年度={csr_year}  公司代號={company_codes or '全部'}")
         print(f"{'='*60}")
-        rows = csr_mod._fetch_rows_from_page(year=csr_year)
+        try:
+            rows = csr_mod._fetch_rows_from_page(year=csr_year)
+        except Exception as e:
+            print(f"[ERR] CSR 清單取得失敗: {e}")
+            rows = []
         if company_codes:
             rows = [r for r in rows if r.get("company_id") in company_codes]
         downloaded, failed = _run_downloads(rows, csr_mod.download_one_with_retry, jobs, fallback_url)

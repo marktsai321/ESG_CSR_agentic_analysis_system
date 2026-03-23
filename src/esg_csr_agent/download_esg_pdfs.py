@@ -136,6 +136,9 @@ def _fetch_rows_from_page(year: int = 2024) -> list[dict]:
     data = resp.json()
     if not isinstance(data, dict) or "data" not in data:
         raise RuntimeError(f"查詢 API 回傳格式異常: {data!r}")
+    if data["data"] is None:
+        print(f"[WARN] TWSE ESG+ 查詢 {year} 年度回傳空資料（該年度可能無 ESG 報告）")
+        return []
     raw = list(data["data"])
     rows: list[dict[str, str]] = []
     for item in raw:

@@ -57,9 +57,15 @@ ESG_QUERIES = {
 
 def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> list[str]:
     from esg_csr_agent.vector_store import get_vector_store
-    from esg_csr_agent.agents.chunk_embed_agent import generate_embeddings
 
     vs = get_vector_store()
+
+    # Skip retrieval if namespace has no data (no PDF was downloaded/embedded)
+    if not vs.namespace_exists(namespace):
+        return []
+
+    from esg_csr_agent.agents.chunk_embed_agent import generate_embeddings
+
     all_texts: list[str] = []
     seen: set[str] = set()
 
@@ -73,6 +79,20 @@ def _retrieve_context(namespace: str, queries: list[str], top_k: int = 5) -> lis
                 all_texts.append(text)
 
     return all_texts
+
+
+def _compute_confidence(chunk_count: int, query_count: int) -> float:
+    """Compute confidence score based on retrieval coverage.
+
+    Heuristic: expect ~3 relevant chunks per query on average.
+    Score scales from 0.0 (no chunks) to 1.0 (3+ chunks per query).
+    """
+    if query_count == 0:
+        return 0.0
+    expected = query_count * 3
+    ratio = min(chunk_count / expected, 1.0) if expected > 0 else 0.0
+    # Apply sigmoid-like curve: 0 chunks → 0.0, some → grows, saturates near 1.0
+    return round(ratio, 2)
 
 
 def analyze_esg(company_id: str, year: int, namespace: str) -> dict:
@@ -91,12 +111,13 @@ def analyze_esg(company_id: str, year: int, namespace: str) -> dict:
 
     for dimension, queries in ESG_QUERIES.items():
         context_chunks = _retrieve_context(namespace, queries)
+        confidence = _compute_confidence(len(context_chunks), len(queries))
         analysis["dimensions"][dimension] = {
             "retrieved_chunks": len(context_chunks),
             "context_summary": "\n".join(context_chunks[:10]),
             "findings": "",
             "metrics": {},
-            "confidence": 0.0,
+            "confidence": confidence,
         }
 
     output_path.write_text(json.dumps(analysis, ensure_ascii=False, indent=2), encoding="utf-8")

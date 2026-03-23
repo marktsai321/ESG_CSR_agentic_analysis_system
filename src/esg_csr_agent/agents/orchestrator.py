@@ -73,11 +73,16 @@ class Pipeline:
             if year >= 2022 and "csr" in self.state.report_types:
                 print(f"[WARN] {year} 年度 CSR 報告書可能不存在（已改為 ESG 永續報告書）")
 
-        results = run_download(
-            companies=self.state.companies,
-            report_types=self.state.report_types,
-            years=self.state.years,
-        )
+        try:
+            results = run_download(
+                companies=self.state.companies,
+                report_types=self.state.report_types,
+                years=self.state.years,
+            )
+        except Exception as e:
+            print(f"[ERR] 下載階段異常: {e}")
+            self.state.add_failure("web_scraper", "download", str(e))
+            return
 
         for rtype, info in results.items():
             for path in info["downloaded"]:

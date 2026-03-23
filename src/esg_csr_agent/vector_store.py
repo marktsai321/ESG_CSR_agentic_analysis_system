@@ -49,9 +49,16 @@ class ChromaVectorStore(VectorStore):
 
     def __init__(self, persist_dir: str | None = None):
         import chromadb
+        from chromadb.config import Settings
 
         path = persist_dir or str(cfg.VECTOR_STORE_DIR)
-        self._client = chromadb.PersistentClient(path=path)
+        self._client = chromadb.PersistentClient(
+            path=path,
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True,
+            ),
+        )
 
     def _get_collection(self, namespace: str):
         return self._client.get_or_create_collection(
@@ -82,13 +89,22 @@ class ChromaVectorStore(VectorStore):
         query_embedding: list[float],
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        col = self._get_collection(namespace)
+        try:
+            col = self._client.get_collection(namespace)
+        except Exception:
+            return []
+        if col.count() == 0:
+            return []
+        # Ensure top_k doesn't exceed collection size
+        n = min(top_k, col.count())
         results = col.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=n,
             include=["documents", "metadatas", "distances"],
         )
         out: list[dict[str, Any]] = []
+        if not results["ids"] or not results["ids"][0]:
+            return out
         for i in range(len(results["ids"][0])):
             out.append({
                 "text": results["documents"][0][i],
@@ -111,9 +127,17 @@ class ChromaVectorStore(VectorStore):
             pass
 
 
+_singleton_store: VectorStore | None = None
+
+
 def get_vector_store(**kwargs) -> VectorStore:
-    """Factory: return the configured backend instance."""
+    """Factory: return the configured backend instance (singleton)."""
+    global _singleton_store
+    if _singleton_store is not None:
+        return _singleton_store
+
     backend = cfg.VECTOR_STORE_BACKEND.lower()
     if backend == "chromadb":
-        return ChromaVectorStore(**kwargs)
+        _singleton_store = ChromaVectorStore(**kwargs)
+        return _singleton_store
     raise ValueError(f"Unsupported vector store backend: {backend!r}")

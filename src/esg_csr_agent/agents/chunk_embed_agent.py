@@ -45,12 +45,23 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     return chunks
 
 
+_embedding_model = None
+
+
+def _get_embedding_model():
+    """Return a cached SentenceTransformer instance."""
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    return _embedding_model
+
+
 def generate_embeddings(chunks: list[str]) -> list[list[float]]:
     """Generate embeddings for a list of text chunks using sentence-transformers."""
-    from sentence_transformers import SentenceTransformer
-
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    embeddings = model.encode(chunks, show_progress_bar=True, normalize_embeddings=True)
+    model = _get_embedding_model()
+    show_bar = len(chunks) > 10
+    embeddings = model.encode(chunks, show_progress_bar=show_bar, normalize_embeddings=True)
     return [emb.tolist() for emb in embeddings]
 
 

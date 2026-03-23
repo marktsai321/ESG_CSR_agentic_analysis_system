@@ -95,13 +95,15 @@ def generate_pdf(state: PipelineState) -> str | None:
         print(f"[OK] PDF 報告已產生: {output_path.name}")
         return str(output_path)
     except ImportError:
-        html_path = output_path.with_suffix(".html")
-        html_path.write_text(html_content, encoding="utf-8")
-        print(f"[WARN] weasyprint 未安裝，改儲存為 HTML: {html_path.name}")
-        return str(html_path)
+        pass  # Fall through to HTML fallback
     except Exception as e:
-        print(f"[ERR] PDF 產生失敗: {e}")
-        return None
+        print(f"[WARN] PDF 產生失敗 ({e})，改儲存為 HTML")
+
+    # Fallback: save as HTML
+    html_path = output_path.with_suffix(".html")
+    html_path.write_text(html_content, encoding="utf-8")
+    print(f"[OK] HTML 報告已產生: {html_path.name}")
+    return str(html_path)
 
 
 def create_delivery_task(agent: Agent, state: PipelineState) -> Task:
