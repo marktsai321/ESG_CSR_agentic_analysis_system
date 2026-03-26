@@ -1,0 +1,25 @@
+# Environment & secrets
+.env
+.venv/
+
+# Data directories (large files, not tracked)
+data/raw_pdfs/
+data/extracted_text/
+data/vector_store/
+data/analysis/
+data/revised/
+data/revised_pdfs/
+outputs/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Auto-generated CSVs
+esg_sources_twse.csv
+csr_sources_mops.csv
