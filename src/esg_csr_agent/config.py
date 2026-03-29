@@ -55,6 +55,8 @@ VECTOR_STORE_BACKEND = os.getenv("VECTOR_STORE_BACKEND", "chromadb")
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.6"))
+WEAK_SCORE_THRESHOLD = int(os.getenv("WEAK_SCORE_THRESHOLD", "5"))
+MIN_COMPANIES = int(os.getenv("MIN_COMPANIES", "3"))
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))

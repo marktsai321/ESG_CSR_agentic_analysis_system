@@ -2,12 +2,12 @@
 
 ## Project Overview
 
-This system automates the end-to-end analysis of ESG (永續報告書) and CSR (企業社會責任報告書) reports for Taiwan-listed companies. Given one or more company names or stock codes, the pipeline downloads the relevant reports from official platforms, extracts and indexes their content, runs structured analysis, cross-validates findings, and produces a polished structured PDF report.
+This system automates the end-to-end analysis of ESG (永續報告書) and CSR (企業社會責任報告書) reports for Taiwan-listed companies. Given a minimum of 3 company names or stock codes, the pipeline downloads the relevant reports from official platforms, extracts and indexes their content, runs structured analysis, and produces a comparative scoring report. The company with the worst total rubric score receives a targeted revision covering only its weak-scoring dimensions.
 
-**Framework:** CrewAI  
-**Primary language for analysis:** Chinese (zh)  
-**Report sources:** TWSE ESG+ (`esggenplus.twse.com.tw`) and MOPS (`mops.twse.com.tw`)  
-**Output:** Structured PDF report
+**Framework:** CrewAI
+**Primary language for analysis:** Chinese (zh)
+**Report sources:** TWSE ESG+ (`esggenplus.twse.com.tw`) and MOPS (`mops.twse.com.tw`)
+**Output:** Structured PDF report containing scores and analysis review for all companies, plus a revised deep-dive for the worst-scoring company's weak dimensions
 
 ---
 
@@ -28,7 +28,6 @@ project/
 │   ├── chunk_embed_agent.py
 │   ├── esg_analysis_agent.py
 │   ├── csr_analysis_agent.py
-│   ├── cross_analysis_agent.py
 │   ├── validation_gate_agent.py
 │   ├── report_revision_agent.py
 │   ├── fail_handler_agent.py
@@ -57,12 +56,16 @@ project/
 
 **Responsibilities:**
 - Receives structured user input from the UI Agent and initialises a pipeline run
+- Validates that at least 3 companies are provided; rejects the run otherwise
 - Maintains a shared state object tracking which companies, years, and report types are in scope
 - Wakes each downstream agent in sequence and passes it the relevant context slice
 - Polls agent status periodically; if an agent times out or signals failure, activates the Fail Handler Agent
 - Resumes the pipeline from the last successful checkpoint after a failure is resolved
-- Triggers parallel execution of the ESG and CSR Analysis Agents once chunking is complete
-- Advances to the Validation Gate only after both parallel analysis branches have completed
+- Triggers parallel execution of the ESG and CSR Analysis Agents once chunking is complete (only for report types that were actually downloaded per company)
+- After all analysis agents complete, computes total rubric scores per company: sum of all `rubric_scores` values (1–10) across all analyzed dimensions (Environmental, Social, Governance). Each dimension has 5 rubric scores, so max per dimension = 50, max per company = 150
+- Identifies the company with the lowest total rubric score as the `worst_company`
+- Advances to the Validation Gate only after scoring is complete
+- Passes only the worst-scoring company's analysis (and only its weak-scoring dimensions) to the Report Revision Agent
 
 **Does NOT:** perform analysis, interact with the user directly, or write files.
 
@@ -73,7 +76,8 @@ project/
 **Role:** Extracts structured requirements from the user before the pipeline begins, and presents the final output at the end.
 
 **Responsibilities:**
-- Engages the user in dialogue to collect: target company names or stock codes (公司代號), desired report years, report scope (ESG only / CSR only / both), and any specific analysis focus areas
+- Engages the user in dialogue to collect: target company names or stock codes (公司代號), desired report years, and any specific analysis focus areas
+- Enforces a **minimum of 3 companies**. If the user provides fewer, prompts them to add more before proceeding
 - Iterates with the user when input is ambiguous or incomplete — does not pass partial information to the Orchestrator
 - Validates that company codes exist on TWSE before confirming
 - At pipeline end, receives the output PDF path from the Output Delivery Agent and presents it to the user with a brief summary
@@ -88,10 +92,12 @@ project/
 
 **Responsibilities:**
 - Receives a list of company codes, report types, and years from the Orchestrator
+- Attempts to download **both** ESG and CSR reports for each company, but **expects only one type to be available** per company. A missing report type is normal and is **not** treated as a failure
 - Checks `data/raw_pdfs/esg/` and `data/raw_pdfs/csr/` for already-downloaded files before making any network requests
 - Calls `download_reports.py` with the `--companies` flag and appropriate `--type` and `--year` arguments
-- Reports back to the Orchestrator: which files were successfully downloaded, which failed, and their local paths
-- Logs all failures to `logs/failed_{type}_{year}.csv` for the Fail Handler
+- Reports back to the Orchestrator: which files were successfully downloaded, which were unavailable, and their local paths
+- Logs true failures (network errors, platform issues) to `logs/failed_{type}_{year}.csv` for the Fail Handler. A report type simply not existing for a company is **not** logged as a failure
+- A company must have at least one report (ESG or CSR) downloaded to proceed. If neither is available, that is a failure
 
 **Entry point:**
 ```bash
@@ -149,7 +155,7 @@ python download_reports.py --type both --year 2023 --companies 2330 2317 2454 -j
 - Saves results as structured JSON to `data/analysis/{company_id}_{year}_esg.json`
 - Reports completion status and confidence scores per dimension to the Orchestrator
 
-**Runs in parallel with:** CSR Analysis Agent.
+**Runs in parallel with:** CSR Analysis Agent (only executes if an ESG report was downloaded for this company).
 
 ---
 
@@ -168,67 +174,52 @@ python download_reports.py --type both --year 2023 --companies 2330 2317 2454 -j
 - Saves results as structured JSON to `data/analysis/{company_id}_{year}_csr.json`
 - Reports completion and confidence scores to the Orchestrator
 
-**Runs in parallel with:** ESG Analysis Agent.
+**Runs in parallel with:** ESG Analysis Agent (only executes if a CSR report was downloaded for this company).
 
 **Note on year range:** CSR-branded reports primarily cover 2013–2021 (pre-ESG mandate). When analyzing more recent years, the Orchestrator should note that CSR reports may not exist and handle gracefully.
 
 ---
 
-### 8. Cross Analysis Agent
-
-**Role:** Compares ESG and CSR findings for the same company to identify consistency, contradictions, and gaps.
-
-**Activated after:** Both ESG and CSR Analysis Agents have completed.
-
-**Responsibilities:**
-- Receives paths to `{company_id}_{year}_esg.json` and `{company_id}_{year}_csr.json`
-- Checks for:
-  - Factual contradictions (e.g. different emissions figures for the same year)
-  - Alignment on material topics between the two reports
-  - Claims present in one report but absent in the other
-  - Trend consistency across years if multi-year data is available
-- Saves cross-analysis results to `data/analysis/{company_id}_{year}_cross.json`
-- Flags high-severity contradictions for the Validation Gate
-
----
-
-### 9. Validation Gate Agent
+### 8. Validation Gate Agent
 
 **Role:** Quality checkpoint before report generation. Blocks the pipeline from advancing to revision if critical issues are detected.
 
-**Activated after:** Cross Analysis Agent completes.
+**Activated after:** All ESG/CSR Analysis Agents have completed and Orchestrator has computed scores.
 
 **Responsibilities:**
-- Verifies that all requested companies and years have analysis output (no missing files)
+- Verifies that all requested companies have at least one analysis output (ESG or CSR) — no company should be entirely missing
 - Checks that no analysis dimension has a confidence score below the acceptable threshold (configurable, default: 0.6)
-- Reviews cross-analysis flags for unresolved high-severity contradictions
-- If all checks pass: signals Orchestrator to proceed to Report Revision
+- Validates that the Orchestrator's total rubric scores and `worst_company` selection are consistent with the analysis JSON files
+- If all checks pass: signals Orchestrator to proceed to Report Revision (for worst-scoring company only)
 - If checks fail: signals Orchestrator with a structured failure report; Orchestrator activates Fail Handler or prompts UI Agent to inform the user
 
 **Key constraint:** This agent makes a go/no-go decision only. It does not fix problems itself.
 
 ---
 
-### 10. Report Revision Agent
+### 9. Report Revision Agent
 
-**Role:** Transforms the structured JSON analysis outputs into coherent, polished prose ready for PDF generation.
+**Role:** Deepens and improves the analysis for the worst-scoring company, focusing only on dimensions that received poor rubric scores.
+
+**Activated for:** The single company identified by the Orchestrator as having the lowest total rubric score (`worst_company`).
 
 **Responsibilities:**
-- Receives all analysis JSON files for the current pipeline run
-- Produces a structured document with:
-  - Executive summary (摘要)
-  - Per-company ESG analysis section
-  - Per-company CSR analysis section
-  - Cross-analysis findings and contradiction flags
-  - Data tables for quantitative metrics
-- Ensures consistent terminology, tone, and formatting across sections
-- Saves the revised document as structured Markdown to `data/revised/{run_id}.md`
+- Receives the worst-scoring company's analysis JSON and the list of its weak-scoring dimensions (rubric scores below a configurable threshold, default: 5 out of 10)
+- For each weak dimension only:
+  - Uses RAG to retrieve additional relevant chunks from the vector store that may have been missed in the initial analysis pass
+  - Re-analyzes the dimension with deeper scrutiny — surfaces additional evidence, nuance, quantitative data, or context
+  - Produces an improved analysis with updated findings and actionable improvement suggestions
+- Does **not** revise dimensions that already scored well — those are left as-is from the original analysis
+- Saves the revised analysis as structured Markdown to `data/revised/{run_id}_{company_id}_revision.md`, clearly marking which dimensions were revised and why
+- The revision output includes: original score, revised findings, and specific improvement recommendations per weak dimension
+
+**Does NOT:** revise or produce output for any company other than the worst-scoring one.
 
 **Key constraint:** All output is in Chinese (zh). Do not introduce English terminology unless it is a proper name or industry standard acronym (e.g. GRI, TCFD, ESG).
 
 ---
 
-### 11. Fail Handler Agent
+### 10. Fail Handler Agent
 
 **Role:** Diagnoses failures anywhere in the pipeline and proposes a recovery action for the Orchestrator to execute.
 
@@ -247,19 +238,20 @@ python download_reports.py --type both --year 2023 --companies 2330 2317 2454 -j
 
 ---
 
-### 12. Output Delivery Agent
+### 11. Output Delivery Agent
 
 **Role:** Generates the final PDF report and delivers it to the user.
 
 **Responsibilities:**
-- Receives the revised Markdown file from the Report Revision Agent
-- Renders it into a structured PDF report with:
-  - Cover page (公司名稱, 報告年度, 報告類型, 生成日期)
+- Receives all analysis JSON files and the revised Markdown file (for the worst-scoring company)
+- Renders the final PDF report with:
+  - Cover page (報告年度, 生成日期, list of analyzed companies)
   - Table of contents
-  - Analysis sections with headers and data tables
-  - Contradiction flags highlighted in a distinct style
+  - **Section 1 — Comparative Score Summary:** A table showing all companies' total rubric scores, per-dimension rubric scores, and overall scores. This provides context for why the worst-scoring company was selected for revision
+  - **Section 2 — Per-Company Analysis Review:** For each company, a summary of its analysis findings, key metrics, rubric scores per dimension, and improvement suggestions (sourced from the analysis JSON). This section covers all companies
+  - **Section 3 — Revised Analysis for Worst-Scoring Company:** The deepened revision output covering only the weak-scoring dimensions of the worst-scoring company. Clearly labels which dimensions were revised, shows original vs. revised findings, and includes specific improvement recommendations
   - Source citations linking findings back to the original report PDFs
-- Saves the final PDF to `outputs/{run_id}_{company_id}_{year}.pdf`
+- Saves the final PDF to `outputs/{run_id}_{year}.pdf`
 - Reports the output path to the Orchestrator, which passes it to the UI Agent for delivery to the user
 
 ---
@@ -271,58 +263,64 @@ User
  │
  ▼
 [1] UI Agent
-    Collect: company codes, years, report scope
+    Collect: ≥3 company codes, years
  │
  ▼
 [2] Orchestrator
-    Initialise pipeline state, begin sequencing
+    Validate ≥3 companies, initialise pipeline state
  │
  ▼
 [3] Web Scraper Agent
-    Download ESG PDFs (TWSE ESG+) and CSR PDFs (MOPS)
+    Download ESG and/or CSR PDFs (expect one type per company)
     → data/raw_pdfs/esg/, data/raw_pdfs/csr/
  │
  ▼
 [4] Text Extraction Agent
-    OCR all PDFs via dots.ocr
+    OCR all downloaded PDFs via dots.ocr
     → data/extracted_text/
  │
  ▼
 [5] Chunk + Embed Agent
     Chunk text, generate embeddings, store in vector store
  │
- ╔══════════════════╗  (parallel)
+ ╔══════════════════╗  (parallel, per company, only for available report types)
  ▼                  ▼
 [6] ESG Analysis   [7] CSR Analysis
     Agent              Agent
     → *_esg.json       → *_csr.json
  ╚══════════════════╝
- │ (both complete)
+ │ (all complete)
  ▼
-[8] Cross Analysis Agent
-    Compare ESG vs CSR findings
-    → *_cross.json
+[2] Orchestrator
+    Compute total rubric scores per company
+    (sum of all rubric_scores across all dimensions)
+    Identify worst_company (lowest total score)
  │
  ▼
-[9] Validation Gate Agent
-    Go / No-go quality check
+[8] Validation Gate Agent
+    Quality check: all companies have analysis,
+    confidence thresholds met, scoring consistent
  │ (pass)
  ▼
-[10] Report Revision Agent
-     Draft polished prose in Chinese
-     → data/revised/{run_id}.md
+[9] Report Revision Agent
+    Deepen analysis for worst_company ONLY
+    Re-analyze weak-scoring dimensions via RAG
+    → data/revised/{run_id}_{company_id}_revision.md
  │
  ▼
-[11] Output Delivery Agent
-     Render final structured PDF
-     → outputs/{run_id}.pdf
+[10] Output Delivery Agent
+     Render final PDF with:
+     - Score summary for ALL companies
+     - Analysis review for ALL companies
+     - Revised deep-dive for worst company's weak dimensions
+     → outputs/{run_id}_{year}.pdf
  │
  ▼
 [2] Orchestrator → UI Agent
     Deliver output path to user
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[12] Fail Handler Agent
+[11] Fail Handler Agent
      Activated by Orchestrator at any stage on timeout / exception / retry loop
      Returns structured recovery proposal → Orchestrator decides action
 ```
@@ -336,14 +334,34 @@ The Orchestrator maintains a pipeline state object passed as context to each age
 ```json
 {
   "run_id": "string",
-  "companies": ["2330", "2317"],
+  "companies": ["2330", "2317", "2454"],
   "years": [2023],
-  "report_types": ["esg", "csr"],
   "stage": "current_stage_name",
+  "available_reports": {
+    "2330": ["esg"],
+    "2317": ["csr"],
+    "2454": ["esg"]
+  },
   "files": {
     "raw_pdfs":       { "2330_2023_esg": "data/raw_pdfs/esg/2330_2023_zh.pdf" },
     "extracted_text": { "2330_2023_esg": "data/extracted_text/2330_2023_esg.txt" },
     "analysis":       { "2330_2023_esg": "data/analysis/2330_2023_esg.json" }
+  },
+  "scores": {
+    "2330": {
+      "total": 87,
+      "dimensions": {
+        "environmental": { "rubric_scores": { "framework_compliance": 8, "data_completeness": 7, "materiality_analysis": 6, "targets_commitments": 7, "external_assurance": 5 }, "subtotal": 33 },
+        "social":        { "rubric_scores": { "...": "..." }, "subtotal": 28 },
+        "governance":    { "rubric_scores": { "...": "..." }, "subtotal": 26 }
+      }
+    },
+    "2317": { "total": 72, "dimensions": { "...": "..." } },
+    "2454": { "total": 95, "dimensions": { "...": "..." } }
+  },
+  "worst_company": "2317",
+  "weak_dimensions": {
+    "2317": ["governance", "social"]
   },
   "failures": [],
   "validation_passed": false,
@@ -355,18 +373,26 @@ The Orchestrator maintains a pipeline state object passed as context to each age
 
 ## Key Constraints and Rules for Claude Code
 
-1. **All agent prompts must be in Chinese (zh).** Analysis agents read zh documents and write zh output. Do not prompt them in English.
+1. **Minimum 3 companies.** The UI Agent and Orchestrator must enforce that at least 3 companies are provided. The pipeline must not start with fewer.
 
-2. **Vector store interface must be abstracted.** Implement a `VectorStore` base class so the backend (ChromaDB / pgvector / Pinecone) can be swapped by changing one config value, not by editing agent code.
+2. **All agent prompts must be in Chinese (zh).** Analysis agents read zh documents and write zh output. Do not prompt them in English.
 
-3. **Scraping is platform-only by default.** The `--fallback-url` flag must never be set without explicit Fail Handler authorisation passed through the Orchestrator. Do not scrape company websites unless this flag is set.
+3. **Vector store interface must be abstracted.** Implement a `VectorStore` base class so the backend (ChromaDB / pgvector / Pinecone) can be swapped by changing one config value, not by editing agent code.
 
-4. **Idempotency.** Every agent must check whether its output already exists before re-running. Re-running the full pipeline for the same company/year should be a no-op for completed stages.
+4. **Scraping is platform-only by default.** The `--fallback-url` flag must never be set without explicit Fail Handler authorisation passed through the Orchestrator. Do not scrape company websites unless this flag is set.
 
-5. **Fail Handler is advisory only.** It returns a recovery proposal. The Orchestrator decides whether to act. Never have the Fail Handler directly call another agent.
+5. **Idempotency.** Every agent must check whether its output already exists before re-running. Re-running the full pipeline for the same company/year should be a no-op for completed stages.
 
-6. **Parallel agents share no mutable state.** ESG and CSR Analysis Agents run in parallel. They must write to separate output files and must not share any in-memory state object.
+6. **Fail Handler is advisory only.** It returns a recovery proposal. The Orchestrator decides whether to act. Never have the Fail Handler directly call another agent.
 
-7. **Confidence scores are required.** Every analysis agent must include a `confidence` field (0.0–1.0) per analysis dimension in its JSON output. The Validation Gate reads these.
+7. **Parallel agents share no mutable state.** ESG and CSR Analysis Agents run in parallel. They must write to separate output files and must not share any in-memory state object.
 
-8. **CSR year range awareness.** The Orchestrator must check: if the requested year is 2022 or later and report type includes CSR, log a warning that CSR-branded reports may not exist for that year and proceed without blocking the pipeline.
+8. **Confidence scores are required.** Every analysis agent must include a `confidence` field (0.0–1.0) per analysis dimension in its JSON output. The Validation Gate reads these.
+
+9. **CSR year range awareness.** The Orchestrator must check: if the requested year is 2022 or later and report type includes CSR, log a warning that CSR-branded reports may not exist for that year and proceed without blocking the pipeline.
+
+10. **One report type expected per company.** The system expects each company to have either an ESG or CSR report, not necessarily both. A missing report type is normal — not a failure. A company with neither report is a failure.
+
+11. **Worst-score routing.** Only the company with the lowest total rubric score proceeds to revision. Total score = sum of all `rubric_scores` values across all analyzed dimensions. The revision covers only weak-scoring dimensions (rubric score below configurable threshold, default: 5).
+
+12. **Output covers all companies.** The final PDF must include score summaries and analysis reviews for every company, not just the worst-scoring one. The revised deep-dive section is only for the worst-scoring company's weak dimensions.

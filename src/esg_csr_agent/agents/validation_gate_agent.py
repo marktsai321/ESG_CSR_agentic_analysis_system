@@ -4,6 +4,8 @@ from __future__ import annotations
 Validation Gate Agent
 =====================
 Quality checkpoint — go/no-go decision only.
+Validates analysis completeness, confidence thresholds, and scoring consistency.
+No cross-analysis checks (Cross Analysis Agent has been removed).
 """
 
 import json
@@ -20,9 +22,9 @@ def create_validation_gate_agent() -> Agent:
         goal="在報告產生前進行品質檢查，確保所有分析結果完整且達到信心門檻。",
         backstory=(
             "你是管線的品質守門員。"
-            "你驗證所有請求的公司和年度都有分析輸出、"
+            "你驗證所有請求的公司都有至少一份分析輸出（ESG 或 CSR）、"
             "沒有分析面向的信心分數低於門檻值、"
-            "且交叉分析中沒有未解決的高嚴重度矛盾。"
+            "且評分計算與最低分公司選取一致。"
             "你只做通過/不通過的決定，不修復問題。"
         ),
         verbose=True,
@@ -35,25 +37,27 @@ def validate(state: PipelineState) -> dict:
     checks: list[dict] = []
     extracted = state.files.get("extracted_text", {})
 
+    # Check 1: Every company has at least one analysis output
     for company in state.companies:
+        has_any = False
         for year in state.years:
-            for rtype in state.report_types:
+            for rtype in ["esg", "csr"]:
                 key = state.file_key(company, year, rtype)
-                # Skip validation for report types that had no source PDF/text
                 if key not in extracted:
-                    print(f"[驗證] 跳過 {key}（無原始資料可供分析）")
                     continue
                 analysis_path = ANALYSIS_DIR / f"{key}.json"
-                exists = analysis_path.exists()
-                checks.append({
-                    "name": f"分析檔案存在: {key}",
-                    "passed": exists,
-                    "detail": str(analysis_path) if exists else f"缺少檔案: {analysis_path.name}",
-                })
+                if analysis_path.exists():
+                    has_any = True
+        checks.append({
+            "name": f"公司分析存在: {company}",
+            "passed": has_any,
+            "detail": "至少一份分析結果存在" if has_any else f"公司 {company} 無任何分析結果",
+        })
 
+    # Check 2: Confidence thresholds per dimension
     for company in state.companies:
         for year in state.years:
-            for rtype in state.report_types:
+            for rtype in ["esg", "csr"]:
                 key = state.file_key(company, year, rtype)
                 if key not in extracted:
                     continue
@@ -77,39 +81,25 @@ def validate(state: PipelineState) -> dict:
                         "detail": f"讀取失敗: {e}",
                     })
 
-    for company in state.companies:
-        for year in state.years:
-            esg_key = state.file_key(company, year, "esg")
-            csr_key = state.file_key(company, year, "csr")
-            has_esg = esg_key in state.files.get("analysis", {})
-            has_csr = csr_key in state.files.get("analysis", {})
-
-            if not (has_esg and has_csr):
-                print(f"[驗證] 跳過 {company}_{year} 交叉分析檢查（ESG/CSR 非同時可用）")
-                continue
-            cross_path = ANALYSIS_DIR / f"{company}_{year}_cross.json"
-            if not cross_path.exists():
-                checks.append({
-                    "name": f"交叉分析: {company}_{year}",
-                    "passed": False,
-                    "detail": "交叉分析結果不存在",
-                })
-                continue
-            try:
-                cross = json.loads(cross_path.read_text(encoding="utf-8"))
-                high_sev = [f for f in cross.get("flags", []) if f.get("severity") == "high"]
-                passed = len(high_sev) == 0
-                checks.append({
-                    "name": f"交叉分析高嚴重度: {company}_{year}",
-                    "passed": passed,
-                    "detail": f"{len(high_sev)} 個高嚴重度矛盾" if not passed else "無高嚴重度矛盾",
-                })
-            except Exception as e:
-                checks.append({
-                    "name": f"讀取交叉分析: {company}_{year}",
-                    "passed": False,
-                    "detail": f"讀取失敗: {e}",
-                })
+    # Check 3: Scoring consistency — verify worst_company matches scores
+    if state.scores and state.worst_company:
+        actual_worst = min(state.scores, key=lambda c: state.scores[c]["total"])
+        consistent = actual_worst == state.worst_company
+        checks.append({
+            "name": "評分一致性: worst_company",
+            "passed": consistent,
+            "detail": (
+                f"最低分公司 {state.worst_company} (總分: {state.scores[state.worst_company]['total']})"
+                if consistent
+                else f"不一致: state={state.worst_company}, 計算={actual_worst}"
+            ),
+        })
+    elif not state.scores:
+        checks.append({
+            "name": "評分一致性: scores",
+            "passed": False,
+            "detail": "無評分資料",
+        })
 
     all_passed = all(c["passed"] for c in checks)
     result = {"passed": all_passed, "checks": checks}
@@ -122,8 +112,7 @@ def create_validation_task(agent: Agent, state: PipelineState) -> Task:
         description=(
             "請執行管線品質驗證。\n"
             f"公司：{', '.join(state.companies)}\n"
-            f"年度：{', '.join(str(y) for y in state.years)}\n"
-            f"報告類型：{', '.join(state.report_types)}\n\n"
+            f"年度：{', '.join(str(y) for y in state.years)}\n\n"
             f"信心門檻：{CONFIDENCE_THRESHOLD}"
         ),
         expected_output="驗證結果（通過/不通過）",

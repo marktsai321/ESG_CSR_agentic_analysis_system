@@ -4,14 +4,22 @@ from __future__ import annotations
 Orchestrator Agent
 ==================
 Central coordinator — pipeline state machine.
+Computes total rubric scores after analysis and routes only the worst-scoring
+company to the Report Revision Agent for deep-dive on weak dimensions.
 """
 
+import json
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from crewai import Agent
 
-from esg_csr_agent.config import OPENAI_MODEL_NAME
+from esg_csr_agent.config import (
+    OPENAI_MODEL_NAME,
+    ANALYSIS_DIR,
+    WEAK_SCORE_THRESHOLD,
+    MIN_COMPANIES,
+)
 from esg_csr_agent.pipeline_state import PipelineState
 
 
@@ -38,12 +46,18 @@ class Pipeline:
         self.state = state
 
     def run(self) -> PipelineState:
+        # Validate minimum companies
+        if len(self.state.companies) < MIN_COMPANIES:
+            print(f"[錯誤] 至少需要 {MIN_COMPANIES} 家公司，目前僅 {len(self.state.companies)} 家。")
+            self.state.stage = "error"
+            return self.state
+
         stages = [
             ("web_scraper", self._stage_download),
             ("text_extraction", self._stage_extract),
             ("chunk_embed", self._stage_chunk_embed),
             ("analysis", self._stage_analysis),
-            ("cross_analysis", self._stage_cross_analysis),
+            ("scoring", self._stage_scoring),
             ("validation", self._stage_validation),
             ("revision", self._stage_revision),
             ("output", self._stage_output),
@@ -70,31 +84,54 @@ class Pipeline:
         from esg_csr_agent.agents.web_scraper_agent import run_download
 
         for year in self.state.years:
-            if year >= 2022 and "csr" in self.state.report_types:
+            if year >= 2022:
                 print(f"[WARN] {year} 年度 CSR 報告書可能不存在（已改為 ESG 永續報告書）")
 
+        # Always try both ESG and CSR
         results = run_download(
             companies=self.state.companies,
-            report_types=self.state.report_types,
+            report_types=["esg", "csr"],
             years=self.state.years,
         )
 
         for rtype, info in results.items():
             for path in info["downloaded"]:
                 self.state.add_file("raw_pdfs", path, path)
+            # Only log true failures, not missing report types
             for cid in info["failed"]:
                 self.state.add_failure("web_scraper", "download", f"下載失敗: {cid}")
+
+        # Track which report types are available per company
+        for company in self.state.companies:
+            available = []
+            for year in self.state.years:
+                for rtype in ["esg", "csr"]:
+                    pdf_path = self._find_pdf(company, year, rtype)
+                    if pdf_path:
+                        available.append(rtype)
+            self.state.available_reports[company] = list(set(available))
+
+        # Check that every company has at least one report
+        for company in self.state.companies:
+            if not self.state.available_reports.get(company):
+                self.state.add_failure(
+                    "web_scraper", "download",
+                    f"公司 {company} 無任何可用報告（ESG 及 CSR 均不存在）",
+                )
+            else:
+                avail = ", ".join(r.upper() for r in self.state.available_reports[company])
+                print(f"[INFO] 公司 {company} 可用報告: {avail}")
 
     def _stage_extract(self) -> None:
         from esg_csr_agent.agents.text_extraction_agent import extract_text_from_pdf
 
         for company in self.state.companies:
             for year in self.state.years:
-                for rtype in self.state.report_types:
+                for rtype in ["esg", "csr"]:
                     key = self.state.file_key(company, year, rtype)
                     pdf_path = self._find_pdf(company, year, rtype)
                     if not pdf_path:
-                        print(f"[SKIP] 找不到 PDF: {key}")
+                        # Missing report type is normal, not a failure
                         continue
                     result = extract_text_from_pdf(pdf_path, key)
                     if result:
@@ -111,7 +148,7 @@ class Pipeline:
                 self.state.add_failure("chunk_embed", key, result.get("error", "未知錯誤"))
 
     def _stage_analysis(self) -> None:
-        """Run ESG and CSR analysis in parallel."""
+        """Run ESG and CSR analysis in parallel, only for available report types."""
         from esg_csr_agent.agents.esg_analysis_agent import analyze_esg
         from esg_csr_agent.agents.csr_analysis_agent import analyze_csr
 
@@ -119,18 +156,11 @@ class Pipeline:
         tasks = []
         for company in self.state.companies:
             for year in self.state.years:
-                if "esg" in self.state.report_types:
-                    ns = self.state.file_key(company, year, "esg")
+                for rtype in ["esg", "csr"]:
+                    ns = self.state.file_key(company, year, rtype)
                     if ns in extracted:
-                        tasks.append(("esg", company, year, ns))
-                    else:
-                        print(f"[SKIP] 無擷取文字，跳過 ESG 分析: {ns}")
-                if "csr" in self.state.report_types:
-                    ns = self.state.file_key(company, year, "csr")
-                    if ns in extracted:
-                        tasks.append(("csr", company, year, ns))
-                    else:
-                        print(f"[SKIP] 無擷取文字，跳過 CSR 分析: {ns}")
+                        tasks.append((rtype, company, year, ns))
+                    # Not in extracted = no PDF available, skip silently
 
         def _run_analysis(task_info):
             rtype, cid, yr, ns = task_info
@@ -154,30 +184,74 @@ class Pipeline:
                     key = self.state.file_key(task_info[1], task_info[2], task_info[0])
                     self.state.add_file("analysis", key, str(result))
 
-    def _stage_cross_analysis(self) -> None:
-        from esg_csr_agent.agents.cross_analysis_agent import cross_analyze
+    def _stage_scoring(self) -> None:
+        """Compute total rubric scores per company and identify the worst."""
+        print("[評分] 計算各公司總評分...")
 
         for company in self.state.companies:
+            company_total = 0
+            dimensions_detail: dict = {}
+
             for year in self.state.years:
-                esg_key = self.state.file_key(company, year, "esg")
-                csr_key = self.state.file_key(company, year, "csr")
-                has_esg = esg_key in self.state.files.get("analysis", {})
-                has_csr = csr_key in self.state.files.get("analysis", {})
+                for rtype in ["esg", "csr"]:
+                    key = self.state.file_key(company, year, rtype)
+                    analysis_path = ANALYSIS_DIR / f"{key}.json"
+                    if not analysis_path.exists():
+                        continue
 
-                if not (has_esg and has_csr):
-                    available = []
-                    if has_esg:
-                        available.append("ESG")
-                    if has_csr:
-                        available.append("CSR")
-                    msg = "、".join(available) if available else "無"
-                    print(f"[SKIP] 跳過交叉分析 {company}_{year}（可用分析：{msg}）")
-                    continue
+                    try:
+                        data = json.loads(analysis_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
 
-                try:
-                    cross_analyze(company, year)
-                except Exception as e:
-                    self.state.add_failure("cross_analysis", f"{company}_{year}", str(e))
+                    for dim_name, dim_data in data.get("dimensions", {}).items():
+                        rubric_scores = dim_data.get("rubric_scores", {})
+                        subtotal = sum(int(v) for v in rubric_scores.values() if isinstance(v, (int, float)))
+                        dim_key = f"{rtype}_{dim_name}"
+                        dimensions_detail[dim_key] = {
+                            "rubric_scores": rubric_scores,
+                            "subtotal": subtotal,
+                            "overall_score": dim_data.get("overall_score", 0.0),
+                            "confidence": dim_data.get("confidence", 0.0),
+                        }
+                        company_total += subtotal
+
+            self.state.scores[company] = {
+                "total": company_total,
+                "dimensions": dimensions_detail,
+            }
+            print(f"  公司 {company}: 總分 {company_total}")
+
+        # Identify worst company
+        if self.state.scores:
+            worst = min(self.state.scores, key=lambda c: self.state.scores[c]["total"])
+            self.state.worst_company = worst
+            print(f"[評分] 最低分公司: {worst} (總分: {self.state.scores[worst]['total']})")
+
+            # Identify weak dimensions for the worst company
+            # First: find dimensions with any rubric score below threshold
+            weak_dims = []
+            for dim_key, dim_info in self.state.scores[worst]["dimensions"].items():
+                for rubric_name, score in dim_info["rubric_scores"].items():
+                    if isinstance(score, (int, float)) and score < WEAK_SCORE_THRESHOLD:
+                        if dim_key not in weak_dims:
+                            weak_dims.append(dim_key)
+                            break
+
+            # If no dimensions are below threshold, still select the lowest-scoring
+            # dimensions for revision (worst company always gets revised)
+            if not weak_dims:
+                dims_by_subtotal = sorted(
+                    self.state.scores[worst]["dimensions"].items(),
+                    key=lambda x: x[1]["subtotal"],
+                )
+                # Pick the bottom half (at least 1) for revision
+                n_to_revise = max(1, len(dims_by_subtotal) // 2)
+                weak_dims = [dim_key for dim_key, _ in dims_by_subtotal[:n_to_revise]]
+                print(f"[評分] 所有維度均達門檻，選取最低分 {n_to_revise} 個維度進行修訂")
+
+            self.state.weak_dimensions[worst] = weak_dims
+            print(f"[評分] {worst} 修訂維度: {', '.join(weak_dims)}")
 
     def _stage_validation(self) -> None:
         from esg_csr_agent.agents.validation_gate_agent import validate
@@ -193,6 +267,10 @@ class Pipeline:
 
     def _stage_revision(self) -> None:
         from esg_csr_agent.agents.report_revision_agent import revise_report
+
+        if not self.state.worst_company:
+            print("[SKIP] 無最低分公司，跳過修訂階段。")
+            return
 
         result = revise_report(self.state)
         if not result:

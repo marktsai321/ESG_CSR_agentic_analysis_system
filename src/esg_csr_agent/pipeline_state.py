@@ -14,13 +14,21 @@ class PipelineState:
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     companies: list[str] = field(default_factory=list)
     years: list[int] = field(default_factory=list)
-    report_types: list[str] = field(default_factory=list)
+    report_types: list[str] = field(default_factory=lambda: ["esg", "csr"])
     stage: str = "init"
     files: dict[str, dict[str, str]] = field(default_factory=lambda: {
         "raw_pdfs": {},
         "extracted_text": {},
         "analysis": {},
     })
+    # Tracks which report types were actually downloaded per company
+    available_reports: dict[str, list[str]] = field(default_factory=dict)
+    # Total rubric scores per company and per-dimension breakdown
+    scores: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Company with the lowest total rubric score
+    worst_company: str | None = None
+    # Weak dimensions for the worst company (rubric score below threshold)
+    weak_dimensions: dict[str, list[str]] = field(default_factory=dict)
     failures: list[dict[str, Any]] = field(default_factory=list)
     validation_passed: bool = False
     output_path: str | None = None
@@ -49,7 +57,11 @@ class PipelineState:
             "years": self.years,
             "report_types": self.report_types,
             "stage": self.stage,
+            "available_reports": self.available_reports,
             "files": self.files,
+            "scores": self.scores,
+            "worst_company": self.worst_company,
+            "weak_dimensions": self.weak_dimensions,
             "failures": self.failures,
             "validation_passed": self.validation_passed,
             "output_path": self.output_path,

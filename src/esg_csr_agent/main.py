@@ -5,13 +5,12 @@ ESG/CSR Report Analysis System — Main Entry Point
 ==================================================
 
 Usage:
-    # After installation:
-    esg-csr-agent                                        # interactive mode
-    esg-csr-agent --companies 2330 2317 --years 2023     # direct mode
-    esg-csr-agent --companies 2330 --years 2023 --types esg
+    # After installation (minimum 3 companies required):
+    esg-csr-agent                                             # interactive mode
+    esg-csr-agent --companies 2330 2317 2454 --years 2023     # direct mode
 
     # Or via Python module:
-    python -m esg_csr_agent --companies 2330 --years 2023
+    python -m esg_csr_agent --companies 2330 2317 2454 --years 2023
 """
 
 import argparse
@@ -105,6 +104,7 @@ def ensure_api_key() -> None:
 def interactive_mode():
     """Collect requirements interactively (simplified UI Agent behaviour)."""
     from esg_csr_agent.pipeline_state import PipelineState
+    from esg_csr_agent.config import MIN_COMPANIES
 
     print("=" * 60)
     print("ESG/CSR 報告書分析系統")
@@ -112,11 +112,14 @@ def interactive_mode():
     print()
 
     while True:
-        raw = input("請輸入公司代號（空白分隔，如 2330 2317）：").strip()
+        raw = input(f"請輸入公司代號（至少 {MIN_COMPANIES} 家，空白分隔，如 2330 2317 2454）：").strip()
         if raw:
             companies = raw.split()
-            break
-        print("請至少輸入一個公司代號。")
+            if len(companies) >= MIN_COMPANIES:
+                break
+            print(f"請至少輸入 {MIN_COMPANIES} 個公司代號（目前僅 {len(companies)} 個）。")
+        else:
+            print(f"請至少輸入 {MIN_COMPANIES} 個公司代號。")
 
     while True:
         raw = input("請輸入報告年度（空白分隔，如 2023）：").strip()
@@ -129,11 +132,8 @@ def interactive_mode():
         else:
             print("請至少輸入一個年度。")
 
-    raw = input("報告範圍 [esg/csr/both]（預設 both）：").strip().lower()
-    if raw in ("esg", "csr"):
-        report_types = [raw]
-    else:
-        report_types = ["esg", "csr"]
+    # System always attempts both ESG and CSR; expects only one to be available per company
+    report_types = ["esg", "csr"]
 
     state = PipelineState(
         companies=companies,
@@ -144,7 +144,7 @@ def interactive_mode():
     print(f"\n確認分析需求：")
     print(f"  公司代號：{', '.join(companies)}")
     print(f"  報告年度：{', '.join(str(y) for y in years)}")
-    print(f"  報告類型：{', '.join(report_types)}")
+    print(f"  報告類型：自動偵測（ESG / CSR）")
     print()
 
     return state
@@ -153,12 +153,14 @@ def interactive_mode():
 def direct_mode(args: argparse.Namespace):
     """Build state directly from CLI arguments."""
     from esg_csr_agent.pipeline_state import PipelineState
+    from esg_csr_agent.config import MIN_COMPANIES
 
-    report_types = []
-    if args.types in ("esg", "both"):
-        report_types.append("esg")
-    if args.types in ("csr", "both"):
-        report_types.append("csr")
+    if len(args.companies) < MIN_COMPANIES:
+        print(f"[錯誤] 至少需要 {MIN_COMPANIES} 家公司，目前僅提供 {len(args.companies)} 家。")
+        sys.exit(1)
+
+    # System always attempts both ESG and CSR
+    report_types = ["esg", "csr"]
 
     return PipelineState(
         companies=args.companies,
@@ -184,10 +186,6 @@ def main() -> None:
     parser.add_argument(
         "--years", nargs="+", type=int, metavar="YEAR",
         help="報告年度",
-    )
-    parser.add_argument(
-        "--types", default="both", choices=["esg", "csr", "both"],
-        help="報告類型（預設 both）",
     )
     args = parser.parse_args()
 
